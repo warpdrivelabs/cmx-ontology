@@ -1,0 +1,33 @@
+[package]
+name = "cmx-onto-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+# cmx-ontology 独立本体平台微服务的 HTTP 服务器（一芯多壳的独立壳）。
+# 采用通用骨架 cmx-web-chassis（与 flow/rules/report/mdm-server 同一套启动/日志/中间件/优雅关闭/banner）。
+# main 只填一个 ServiceSpec：onto 路由 + 数据源注册钩子 + 建表钩子（**无 poller**）+ onto 专属
+# banner，交 chassis::run 装配。零 cmx-api / 零平台依赖。
+
+[[bin]]
+name = "cmx-onto-server"
+path = "src/main.rs"
+
+[dependencies]
+cmx-onto-app = { workspace = true }
+cmx-web-chassis = { workspace = true }
+cmx-web-monitor = { workspace = true }
+cmx-database-pg = { workspace = true }
+# 页面只读投递（native-pages 通用路由装配；四区本体设计工作台 + 本体图组件 vendor）
+cmx-form = { workspace = true }
+# 基础服务库：pg 数据源注册原语 + 统一基础设施装配（init_infra/shutdown_infra，含 Nacos 注册/
+# 配置中心接入，开关默认全关）。
+cmx-service-base = { workspace = true, features = ["config-manager", "registry-config"] }
+
+axum = { workspace = true }
+tokio = { workspace = true }
+dotenvy = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+toml = { workspace = true }
+serde = { workspace = true }

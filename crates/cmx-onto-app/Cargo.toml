@@ -1,0 +1,33 @@
+[package]
+name = "cmx-onto-app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+# cmx-ontology 的**平台中立应用层**（一芯）：全部 axum handler + 路由表 onto_routes::<S>() +
+# 租户 scope + 认证中间件 + 响应信封（复用 cmx-engine-kit）+ 建模台（自包含 HTML 控制台）。
+#
+# 两壳复用同一核：平台壳 cmx-onto-api（留 cmx-container）调 onto_routes::<CmxAppState>()；独立壳
+# cmx-onto-server（本 workspace）调 onto_routes::<()>()。handler 不绑 State 提取器 → 对任意 S 泛型成立。
+
+[dependencies]
+cmx-onto-model = { workspace = true }
+cmx-onto-store-pg = { workspace = true }
+# infra（跨 workspace path 进 cmx-container）
+cmx-database-pg = { workspace = true }
+cmx-web-monitor = { workspace = true }
+# 基础服务库：多租户懒注册 pg 数据源原语（default-features=false 不拉 Redis/sqlx）
+cmx-service-base = { workspace = true, default-features = false }
+# 配置中台（ConfigManager）：[auth] 段（tenancy 模式）直读
+cmx-utils = { workspace = true }
+# 引擎应用层横切件：tenant 上下文 / auth 中间件 / resp 信封唯一真源
+cmx-engine-kit = { workspace = true }
+
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+tracing = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }

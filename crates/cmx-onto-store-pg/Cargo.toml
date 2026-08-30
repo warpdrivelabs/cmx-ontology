@@ -1,0 +1,27 @@
+[package]
+name = "cmx-onto-store-pg"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+# 本体平台的 tokio-postgres 持久化实现（OntologyStore 契约的 PG 落地）。
+# 七表（om_ 前缀，本体定义元数据）：
+#   om_object_type / om_link_type / om_interface / om_shared_property / om_action_type / om_function
+#   om_version（发布快照：全量清单 + 定义 jsonb + rev 内容哈希）
+# 硬约束（对齐 flow/rules store-pg）：om_ 前缀、无外键（索引替代）、DDL 幂等、jsonb 用
+# DataValue::Json(String) 承载、TIMESTAMPTZ 用 DataValue::DateTime。
+# 多租户（O7 目标）：per-tenant DB 隔离，故表内不带 tenant 列（库即租户边界）。
+
+[dependencies]
+cmx-onto-model = { workspace = true }
+cmx-database-pg = { workspace = true }
+cmx-core = { workspace = true }
+
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+xxhash-rust = { workspace = true }

@@ -1,0 +1,22 @@
+# cmx-ontology 使用国内 aliyun 镜像源拉取 crates.io（与 cmx-container / cmx-flowengine / cmx-rulesengine 一致）。
+# 域内 crate 走 path，基础设施走跨 workspace path 进 cmx-container，外部 crate 从 crates.io（aliyun 镜像）拉取。
+[source.crates-io]
+replace-with = 'aliyun'
+
+[source.aliyun]
+registry = "sparse+https://mirrors.aliyun.com/crates.io-index/"
+
+# nora 私仓：本库自身不从 nora 拉任何依赖（全 path/crates.io），但必须在此**定义**该 registry
+# 名字——因为跨 workspace path 引用的 cmx-container infra（cmx-core/cmx-database-pg/…）以
+# version.workspace/edition.workspace 继承自 cmx-container 根 manifest，Cargo 需完整解析该根，
+# 其中含 [patch.nora]；若当前配置无 nora 定义则解析失败（"patch entry nora should be a URL or
+# registry name"）。cmx-container/.cargo/config.toml 是本库的 sibling 而非 ancestor，不会被自动合并，
+# 故在此镜像其 nora 定义。该 patch 目标不在本库依赖图中，故 nora index 实际从不被拉取。
+[registries.nora]
+index = "sparse+http://192.168.157.46:4000/cargo/index/"
+
+[http]
+check-revoke = false
+
+[net]
+git-fetch-with-cli = true

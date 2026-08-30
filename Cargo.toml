@@ -1,0 +1,64 @@
+# cmx-ontology —— Palantir 式企业本体平台（独立微服务工作区，:8097）。
+#
+# 方案见 docs/20260828_cmx-ontology_Palantir式企业本体平台_Rust完整建设方案.md。
+# 本 workspace 承载本体平台与平台/框架解耦的 crate（model/store-pg/app）+ 独立可跑 bin
+# （cmx-onto-server），采用与 cmx-flowengine / cmx-rulesengine 完全一致的「一芯多壳」骨架。
+#
+# 依赖策略（逐一对齐 cmx-rulesengine）：域内 onto crate 纯 path；基础设施（cmx-database-pg /
+# cmx-core / cmx-web-chassis / cmx-web-monitor / cmx-service-base / cmx-utils / cmx-engine-kit）以
+# path 复用 cmx-container 的成员 crate（它们仍属 cmx-container workspace，对其根解析 workspace=true
+# 与 [patch.nora]，故本库无需 nora 私仓、无需把 infra 纳入 members）；外部 crate 走 aliyun 镜像
+# （见 .cargo/config.toml），版本与 cmx-container 根对齐以便 Cargo 合一。
+[workspace]
+resolver = "2"
+members = [
+    "crates/cmx-onto-model",
+    "crates/cmx-onto-store-pg",
+    "crates/cmx-onto-app",
+    "crates/cmx-onto-server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["skylake@pansoft.com"]
+
+[workspace.dependencies]
+# —— 域内 onto crate（纯 path，不经私仓）——
+cmx-onto-model = { path = "crates/cmx-onto-model", version = "0.1.0" }
+cmx-onto-store-pg = { path = "crates/cmx-onto-store-pg", version = "0.1.0" }
+cmx-onto-app = { path = "crates/cmx-onto-app", version = "0.1.0" }
+
+# —— 复用 cmx-container 基础设施（跨 workspace 路径；仍是 cmx-container 成员，非本库成员）——
+cmx-database-pg = { path = "../cmx-container/crates/libs/cmx-infra/cmx-database-pg", version = "0.1.12" }
+cmx-core = { path = "../cmx-container/crates/libs/cmx-core", version = "0.1.12" }
+cmx-web-chassis = { path = "../cmx-container/crates/libs/cmx-web-chassis", version = "0.1.12" }
+cmx-web-monitor = { path = "../cmx-container/crates/libs/cmx-web-monitor", version = "0.1.12" }
+cmx-service-base = { path = "../cmx-container/crates/libs/cmx-service-base", version = "0.1.12", default-features = false }
+cmx-utils = { path = "../cmx-container/crates/libs/cmx-utils", version = "0.1.12" }
+# 引擎应用层横切件单源（tenant 上下文 / dbid 路由 / 两族 auth 中间件 / resp 别名）
+cmx-engine-kit = { path = "../cmx-container/crates/libs/cmx-engine-kit", version = "0.1.12" }
+# 页面只读投递（native/html-pages 六端点通用路由；四区本体设计工作台 + 本体图组件 vendor）
+cmx-form = { path = "../cmx-container/crates/libs/cmx-form", version = "0.1.12" }
+
+# —— 外部 crate（版本照抄 cmx-container 根 [workspace.dependencies]，与 flow/rules 对齐）——
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+toml = "0.8"
+thiserror = "2.0"
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1.21", features = ["v4", "serde"] }
+async-trait = "0.1"
+anyhow = "1.0"
+# 非加密内容哈希（发布 rev = xxhash64→16hex，字节对齐门户 cmx-jsonstore::content_rev）
+xxhash-rust = { version = "0.8", features = ["xxh64"] }
+tokio = { version = "1.41", features = ["full"] }
+axum = { version = "0.8.9", features = ["macros", "multipart"] }
+tower-http = { version = "0.6", features = ["fs", "cors", "trace", "compression-full", "timeout", "limit"] }
+dotenvy = "0.15"
+
+[profile.release]
+opt-level = 3
+lto = "thin"

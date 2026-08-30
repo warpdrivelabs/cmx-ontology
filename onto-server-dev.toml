@@ -1,0 +1,27 @@
+# cmx-onto-server 开发配置（真机开发库）。用法：CONFIG_FILE=onto-server-dev.toml cargo run -p cmx-onto-server
+#
+# 指向团队开发库 192.168.157.46:5432/cmx_fico（与 flow/rules 复用同库；om_* 前缀不冲突）。
+[server]
+host = "0.0.0.0"
+port = 8097
+log_dir = "logs"
+log_level = "info"
+graceful_timeout_secs = 10
+
+[[databases]]
+db_id = "onto_pg"
+db_name = "本体平台库"
+db_type = "postgres"
+db_url = "postgres://dbuser_dba:9lWsRQY4i4VToPpkHcCRFzki@192.168.157.46:5432/cmx_fico"
+default = true
+
+[auth]
+mode = "off"
+tenancy = "single"
+# 服务间 API Key（key:tenant，逗号分隔）——接受门户反代注入的 X-API-Key（门户 outgoing_api_key）。
+# 门户经 OntoProxy 转发 /api/onto/* 时带此 key + X-Delegated-User-Token（用户身份），onto 据此建 scope。
+api_keys = "cmx_sk_dev_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6:default"
+
+# —— 页面资产（[assets] 段：native 页面投递目录；四区本体设计工作台 + 本体图组件 vendor）——
+[assets]
+ui_native_dir = "../cmx-container/assets/onto/web/ui-native"

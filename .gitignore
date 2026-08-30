@@ -1,0 +1,10 @@
+/target
+/logs
+.DS_Store
+# 本地启动配置（含 PG 口令/API Key，dotenvy 加载；切勿提交）
+/.env
+/.env.*
+# 备份/临时
+*.jsonback
+*.bak
+**/.DS_Store

@@ -1,0 +1,31 @@
+# cmx-onto-server 配置（独立本体平台微服务；形态与 rules-server.toml / flow-server.toml 对齐）。
+#
+# 加载顺序：本文件（路径由 CONFIG_FILE 指定，或默认 ./onto-server.toml）→ 环境变量覆盖。
+# chassis 框架级走 [server] 段（SERVER__* 环境变量亦可覆盖，与 ConfigManager `__` 约定同名）；业务段经 ConfigManager 直读。
+
+# —— chassis 框架级（[server] 段，全平台统一形态）——
+[server]
+host = "0.0.0.0"
+port = 8097
+log_dir = "logs"
+log_level = "info"
+graceful_timeout_secs = 10
+
+# —— 数据源（标准 [[databases]] 段；BaseConfig 直读，db_id = 引擎常量 ONTO_DB_ID = "onto_pg"）——
+# 本体平台运行库（本体定义 om_* 元数据表）。om_* 前缀与 cr_*/cmx_rule_*/cmx_flow_* 不冲突。
+# 默认 localhost 占位；真机开发用 onto-server-dev.toml（CONFIG_FILE 指定）。
+[[databases]]
+db_id = "onto_pg"
+db_name = "本体平台库"
+db_type = "postgres"
+db_url = "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+default = true
+
+# —— 认证（[auth] 段，ConfigManager 直读；off = 不认证，单租户零回归；multi = db-per-tenant）——
+[auth]
+mode = "off"
+tenancy = "single"
+
+# —— 页面资产（[assets] 段：native 页面投递目录；四区本体设计工作台 + 本体图组件 vendor）——
+[assets]
+ui_native_dir = "../cmx-container/assets/onto/web/ui-native"

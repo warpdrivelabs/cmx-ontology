@@ -1,0 +1,5 @@
+# Rust 工具链锁定：与 cmx-container / cmx-flowengine / cmx-rulesengine 对齐，避免"本机能过、CI 不过"的漂移。
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

@@ -1,0 +1,21 @@
+# cmx-onto-server 配置样例。复制为 onto-server.toml 并按环境改写数据源/认证。
+[server]
+host = "0.0.0.0"
+port = 8097
+log_dir = "logs"
+log_level = "info"
+graceful_timeout_secs = 10
+
+# 本体平台运行库（本体定义 om_* 元数据表）。db_id 必须为 "onto_pg"（store 按该 db_id 寻址）。
+[[databases]]
+db_id = "onto_pg"
+db_name = "本体平台库"
+db_type = "postgres"
+db_url = "postgres://<user>:<pass>@<host>:5432/<db>"
+default = true
+
+# off = 不认证（单租户，零回归）；jwt = 校验 Bearer JWT。
+# tenancy: single = 单库（默认）；multi = db-per-tenant（每租户一库 onto_<tenant>）。
+[auth]
+mode = "off"
+tenancy = "single"
