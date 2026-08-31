@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  id="defs_onto_int" targetNamespace="http://cmx/onto-int">
+  <bpmn:process id="onto_int_approve" name="本体联调审批" isExecutable="true">
+    <bpmn:startEvent id="start"/>
+    <bpmn:sequenceFlow id="f1" sourceRef="start" targetRef="approve"/>
+    <bpmn:userTask id="approve" name="审批"/>
+    <bpmn:sequenceFlow id="f2" sourceRef="approve" targetRef="end"/>
+    <bpmn:endEvent id="end"/>
+  </bpmn:process>
+</bpmn:definitions>

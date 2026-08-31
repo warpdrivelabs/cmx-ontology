@@ -161,6 +161,7 @@ where
         .route("/action-logs", get(action_handlers::list_action_logs))
         .route("/action-outbox", get(action_handlers::list_action_outbox))
         .route("/action-outbox/config", get(action_handlers::outbox_config))
+        .route("/flow/definitions", get(action_handlers::flow_definitions))
         .route("/action-outbox/dispatch", post(action_handlers::dispatch_outbox))
         .route(
             "/action-outbox/{id}/dispatched",

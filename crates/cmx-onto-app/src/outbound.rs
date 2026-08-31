@@ -68,12 +68,21 @@ pub fn webhook_allow() -> Vec<String> {
         .collect()
 }
 
-/// 出站配置快照（诊断端点 `GET /action-outbox/config` 用；**不含任何密钥**）。
+/// 调 flowengine 的服务间 API Key（`ONTO_FLOW_API_KEY` / `onto.flow_api_key`）。
+/// 设了则起实例请求带 `X-API-Key`（portal→flow 同款服务身份，命中 flow `[auth].api_keys` 短路 JWT）；
+/// 未设则仅带 `X-Tenant`（适配 flow off 模式）。
+pub fn flow_api_key() -> Option<String> {
+    let v = cfg("ONTO_FLOW_API_KEY", "onto.flow_api_key", "");
+    if v.is_empty() { None } else { Some(v) }
+}
+
+/// 出站配置快照（诊断端点 `GET /action-outbox/config` 用；**不含任何密钥**，仅暴露是否已配）。
 pub fn config_snapshot() -> Value {
     json!({
         "outboundEnabled": outbound_enabled(),
         "flowUrl": flow_base(),
         "flowInstancesPath": FLOW_INSTANCES_PATH,
+        "flowApiKeySet": flow_api_key().is_some(),
         "webhookAllow": webhook_allow(),
     })
 }
@@ -123,11 +132,19 @@ pub async fn post_webhook(url: &str, payload: &Value) -> Result<Value, String> {
 /// 返回实例 id（信封 `{code,data}` 与裸对象都兼容）。
 pub async fn start_business_process(tenant: &str, def_key: &str, payload: &Value) -> Result<String, String> {
     let url = format!("{}{}", flow_base(), FLOW_INSTANCES_PATH);
-    let body = json!({ "definitionKey": def_key, "variables": payload });
-    let resp = client()
+    let mut body = json!({ "definitionKey": def_key, "variables": payload });
+    // 副作用 payload 若带 businessKey，则透传为流程业务键（便于回查/幂等/单据关联）。
+    if let Some(bk) = payload.get("businessKey").and_then(|v| v.as_str()) {
+        body["businessKey"] = json!(bk);
+    }
+    let mut rb = client()
         .post(&url)
         .header("X-Tenant", tenant)
-        .header("X-Onto-Source", "cmx-ontology")
+        .header("X-Onto-Source", "cmx-ontology");
+    if let Some(key) = flow_api_key() {
+        rb = rb.header("X-API-Key", key); // 服务身份，命中 flow [auth].api_keys 短路 JWT
+    }
+    let resp = rb
         .json(&body)
         .send()
         .await
@@ -154,4 +171,25 @@ pub async fn start_business_process(tenant: &str, def_key: &str, payload: &Value
         .and_then(|i| i.as_str())
         .unwrap_or("");
     Ok(id.to_string())
+}
+
+/// 列 flowengine 已发布流程定义（设计台「触发流程」副作用的可视化选择器数据源）。
+/// 返回 flow `GET /api/flow/v1/definitions` 的 data（通常为 `[{key,name,...}]`）。flow 不可达即 Err。
+pub async fn list_flow_definitions(tenant: &str) -> Result<Value, String> {
+    let url = format!("{}/api/flow/v1/definitions", flow_base());
+    let mut rb = client()
+        .get(&url)
+        .header("X-Tenant", tenant)
+        .header("X-Onto-Source", "cmx-ontology");
+    if let Some(key) = flow_api_key() {
+        rb = rb.header("X-API-Key", key);
+    }
+    let resp = rb.send().await.map_err(|e| format!("列流程定义失败（{url}）: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!("列流程定义非 2xx（{status}）"));
+    }
+    let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    Ok(v.get("data").cloned().unwrap_or(v))
 }

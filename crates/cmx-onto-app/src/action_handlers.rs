@@ -57,13 +57,14 @@ pub async fn execute_action(
     }
     // 3) 解析编辑（参数替换 → ObjectEdit 列表）
     let edits = resolve_edits(&action, &req.params).map_err(OntoError::business_error)?;
-    if edits.is_empty() {
-        return Err(OntoError::business_error(format!(
-            "动作 {api_name} 无编辑规则（logic 为空），无可执行内容"
-        )));
-    }
     // 4) 解析副作用（参数替换 → SideEffect 列表；随编辑同事务入 Outbox）
     let effects = resolve_side_effects(&action, &req.params);
+    // 编辑与副作用皆空 → 空动作拒绝；仅副作用（如纯「起流程」/通知）也是合法可执行动作。
+    if edits.is_empty() && effects.is_empty() {
+        return Err(OntoError::business_error(format!(
+            "动作 {api_name} 既无编辑规则也无副作用，无可执行内容"
+        )));
+    }
     // 4.5) 写侧 PEP（O6 策略 deny_actions）：主体对该动作/目标对象类型是否被拒。
     let subjects = subjects_of(&req.subjects);
     if !subjects.is_empty() {
@@ -164,6 +165,36 @@ pub async fn mark_outbox_dispatched(
 /// 返回 `{outboundEnabled, flowUrl, flowInstancesPath, webhookAllow}`。
 pub async fn outbox_config() -> Result<Json<ApiResp<Value>>> {
     Ok(Json(ApiResp::ok(crate::outbound::config_snapshot())))
+}
+
+/// GET /flow/definitions —— 代理 flowengine 已发布流程定义（设计台「触发流程」副作用选择器用）。
+/// flow 不可达时**容错**返回空列表 + error（前端降级为自由输入 flowDefKey）。
+pub async fn flow_definitions() -> Result<Json<ApiResp<Value>>> {
+    let tenant = current_tenant();
+    match crate::outbound::list_flow_definitions(&tenant).await {
+        Ok(data) => {
+            // flow 返回 data 可能是裸数组 [..] 或 {definitions:[..]}（信封已剥一层）——两者都归一。
+            let arr = data
+                .get("definitions")
+                .and_then(|d| d.as_array())
+                .or_else(|| data.as_array());
+            let list: Vec<Value> = arr
+                .map(|a| {
+                    a.iter()
+                        .map(|d| {
+                            json!({
+                                "key": d.get("key").and_then(|x| x.as_str()).unwrap_or(""),
+                                "name": d.get("name").and_then(|x| x.as_str()).unwrap_or(""),
+                            })
+                        })
+                        .filter(|d| !d["key"].as_str().unwrap_or("").is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(Json(ApiResp::ok(json!({ "definitions": list }))))
+        }
+        Err(e) => Ok(Json(ApiResp::ok(json!({ "definitions": [], "error": e })))),
+    }
 }
 
 /// 派发参数：?limit=
