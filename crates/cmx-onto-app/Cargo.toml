@@ -32,3 +32,5 @@ tracing = { workspace = true }
 tokio = { workspace = true }
 async-stream = "0.3"
 async-trait = { workspace = true }
+# O4-M3 dispatcher 出站投递（webhook / startBusinessProcess）HTTP 客户端
+reqwest = { workspace = true }

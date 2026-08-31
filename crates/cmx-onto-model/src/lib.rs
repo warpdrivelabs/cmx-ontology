@@ -14,6 +14,8 @@ pub mod feel;
 pub mod function;
 pub mod authz;
 pub mod funnel;
+pub mod import;
+pub mod osdk;
 
 pub use def::*;
 pub use error::{Error, Result, StoreError, StoreResult};
@@ -25,6 +27,8 @@ pub use feel::{eval_expression, eval_predicate, FeelError};
 pub use function::{evaluate as evaluate_function, input_specs, check_inputs, InputSpec, FunctionError};
 pub use authz::{residual_set, redact_rows};
 pub use funnel::{map_row, MappedObject, SourceMapping, SyncReport, Violation};
+pub use import::{map_doc, map_dct, DocImport, DctImport};
+pub use osdk::generate_typescript;
 
 /// 单租户 / 无租户 scope 的默认租户名。
 pub const DEFAULT_TENANT: &str = "default";

@@ -15,10 +15,13 @@ pub mod action_handlers;
 pub mod function_handlers;
 pub mod policy_handlers;
 pub mod funnel_handlers;
+pub mod import_handlers;
+pub mod osdk_handlers;
 pub mod events;
 pub mod object_engine;
 pub mod object_handlers;
 pub mod openapi;
+pub mod outbound;
 pub mod resp;
 pub mod stats;
 pub mod tenancy;
@@ -157,6 +160,7 @@ where
         )
         .route("/action-logs", get(action_handlers::list_action_logs))
         .route("/action-outbox", get(action_handlers::list_action_outbox))
+        .route("/action-outbox/config", get(action_handlers::outbox_config))
         .route("/action-outbox/dispatch", post(action_handlers::dispatch_outbox))
         .route(
             "/action-outbox/{id}/dispatched",
@@ -192,6 +196,11 @@ where
             "/funnel/pipeline-status/{object_type}",
             get(funnel_handlers::pipeline_status),
         )
+        // —— DOC/DCT 反向导入 ——
+        .route("/import/doc", post(import_handlers::import_doc))
+        .route("/import/dct", post(import_handlers::import_dct))
+        // —— OSDK 代码生成 ——
+        .route("/osdk/typescript", get(osdk_handlers::typescript_sdk))
         // —— 建模台 / 监控数据源 ——
         .route("/stats", get(stats::stats))
 }

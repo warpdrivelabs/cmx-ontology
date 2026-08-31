@@ -58,6 +58,8 @@ tokio = { version = "1.41", features = ["full"] }
 axum = { version = "0.8.9", features = ["macros", "multipart"] }
 tower-http = { version = "0.6", features = ["fs", "cors", "trace", "compression-full", "timeout", "limit"] }
 dotenvy = "0.15"
+# O4-M3 dispatcher 出站（webhook 真发 + 调 flowengine v1 起实例）；rustls 与 flow/rules 对齐。
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [profile.release]
 opt-level = 3

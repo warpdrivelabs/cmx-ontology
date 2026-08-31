@@ -787,6 +787,7 @@ dependencies = [
  "cmx-service-base",
  "cmx-utils",
  "cmx-web-monitor",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",

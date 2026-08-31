@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# O4-M3 dispatcher E2E：动作副作用入 Outbox → 真投递（emitEvent→SSE / callFunction→O5 / webhook→deferred）。
+# O4-M3 dispatcher E2E：动作副作用入 Outbox → 真投递（emitEvent→SSE / callFunction→O5 /
+# webhook 真发但外部 host 被 SSRF 白名单拦 → failed）。真投递成功路径见 o4m3_dispatch_delivery.sh。
 set -uo pipefail
 B="http://127.0.0.1:8097/api/onto/v1"; K="cmx_sk_dev_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6"
 H=(-s -H "Content-Type: application/json" -H "X-API-Key: $K")
@@ -35,20 +36,20 @@ sleep 2
 DP=$(curl "${H[@]}" -X POST "$B/action-outbox/dispatch" -d '{}')
 echo "dispatch: $DP"
 chk "派发 dispatched=2(emitEvent+callFunction)" "echo '$DP' | grep -qE '\"dispatched\":2'" "$DP"
-chk "派发 deferred=1(webhook外部未接)" "echo '$DP' | grep -qE '\"deferred\":1'" "$DP"
-chk "派发 failed=0" "echo '$DP' | grep -qE '\"failed\":0'" "$DP"
+chk "派发 failed=1(webhook 外部 host 被 SSRF 白名单拦)" "echo '$DP' | grep -qE '\"failed\":1'" "$DP"
+chk "派发 deferred=0" "echo '$DP' | grep -qE '\"deferred\":0'" "$DP"
 sleep 2
 kill "$SSE_PID" 2>/dev/null || true
 SSE=$(cat "$SSE_OUT"); rm -f "$SSE_OUT"
 echo "sse: $SSE"
 chk "SSE 收到 emitEvent(orderClosed_D-1)" "echo '$SSE' | grep -q 'orderClosed_D-1'" "$SSE"
 
-# Outbox 状态：emitEvent/callFunction=dispatched，webhook=deferred，无 pending
+# Outbox 状态：emitEvent/callFunction=dispatched，webhook=failed(SSRF 白名单拦)，无 pending
 OBd=$(curl "${H[@]}" "$B/action-outbox?status=dispatched&limit=50")
 chk "Outbox emitEvent 转 dispatched" "echo '$OBd' | grep -q 'emitEvent'" "$OBd"
 chk "Outbox callFunction 转 dispatched" "echo '$OBd' | grep -q 'callFunction'" "$OBd"
-OBf=$(curl "${H[@]}" "$B/action-outbox?status=deferred&limit=50")
-chk "Outbox webhook 转 deferred" "echo '$OBf' | grep -q 'webhook'" "$OBf"
+OBf=$(curl "${H[@]}" "$B/action-outbox?status=failed&limit=50")
+chk "Outbox webhook 转 failed(白名单拦)" "echo '$OBf' | grep -q 'webhook' && echo '$OBf' | grep -q '白名单'" "$OBf"
 # 再次 dispatch → 无 pending 可派（全 0）
 DP2=$(curl "${H[@]}" -X POST "$B/action-outbox/dispatch" -d '{}')
 chk "无 pending 再派 total=0(幂等)" "echo '$DP2' | grep -qE '\"total\":0'" "$DP2"

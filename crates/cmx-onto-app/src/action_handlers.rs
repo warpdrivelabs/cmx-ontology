@@ -160,6 +160,12 @@ pub async fn mark_outbox_dispatched(
     Ok(Json(ApiResp::ok(json!({ "id": id, "updated": n > 0 }))))
 }
 
+/// GET /action-outbox/config —— dispatcher 出站配置快照（运维/诊断；不含任何密钥）。
+/// 返回 `{outboundEnabled, flowUrl, flowInstancesPath, webhookAllow}`。
+pub async fn outbox_config() -> Result<Json<ApiResp<Value>>> {
+    Ok(Json(ApiResp::ok(crate::outbound::config_snapshot())))
+}
+
 /// 派发参数：?limit=
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
@@ -170,7 +176,7 @@ pub struct DispatchQuery {
 /// POST /action-outbox/dispatch —— 抽取 pending 副作用并**真投递**（O4-M3 dispatcher）。
 ///
 /// 按 kind 分派：`emitEvent`→SSE 事件流（O7）；`callFunction`→O5 函数求值；`notification`→SSE 通知；
-/// `webhook`/`startBusinessProcess`→deferred（外部投递需 URL/flow 配置，M1 未接则挂起）。
+/// `webhook`→真发 HTTP（受 host 白名单约束）；`startBusinessProcess`→调 cmx-flowengine v1 起实例。
 pub async fn dispatch_outbox(Query(q): Query<DispatchQuery>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     let limit = q.limit.unwrap_or(50).clamp(1, 500);
@@ -186,7 +192,7 @@ pub async fn dispatch_outbox(Query(q): Query<DispatchQuery>) -> Result<Json<ApiR
         let outcome = dispatch_one(&tenant, &kind, &target, &payload).await;
         match outcome {
             Ok(true) => { let _ = exec.mark_status(id, "dispatched", None).await; dispatched += 1; }
-            Ok(false) => { let _ = exec.mark_status(id, "deferred", Some("外部投递未配置（webhook URL / flow）")).await; deferred += 1; }
+            Ok(false) => { let _ = exec.mark_status(id, "deferred", Some("出站已熄火（ONTO_OUTBOUND=off）")).await; deferred += 1; }
             Err(e) => { let _ = exec.mark_status(id, "failed", Some(&e)).await; failed += 1; }
         }
     }
@@ -220,8 +226,22 @@ async fn dispatch_one(tenant: &str, kind: &str, target: &str, payload: &Value) -
             cmx_onto_model::evaluate_function(&func, payload).map_err(|e| e.to_string())?;
             Ok(true)
         }
-        // 外部投递：webhook / 触发流程 —— M1 未接（无 URL/flow 配置）→ 挂起。
-        "webhook" | "startBusinessProcess" => Ok(false),
+        // 外部投递（O4-M3 真投递）：webhook 真发 HTTP；startBusinessProcess 调 cmx-flowengine v1 起实例。
+        // 跨微服务只经 HTTP（onto 不 path-dep flowengine）。全局熄火（ONTO_OUTBOUND=off）时回 deferred 挂起。
+        "webhook" => {
+            if !crate::outbound::outbound_enabled() {
+                return Ok(false);
+            }
+            crate::outbound::post_webhook(target, payload).await.map(|_| true)
+        }
+        "startBusinessProcess" => {
+            if !crate::outbound::outbound_enabled() {
+                return Ok(false);
+            }
+            let iid = crate::outbound::start_business_process(tenant, target, payload).await?;
+            tracing::info!(target = %target, instance = %iid, "startBusinessProcess 已投递");
+            Ok(true)
+        }
         other => Err(format!("未知副作用类型 {other}")),
     }
 }
