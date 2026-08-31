@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" font-family="'Segoe UI','PingFang SC',system-ui,sans-serif">
+  <defs>
+    <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#5b6b8c"/></marker>
+    <style>.t{fill:#e6ecf5}.m{fill:#94a3b8}.mono{font-family:ui-monospace,Menlo,monospace}.k{font-weight:700}.chip{font-size:11px}</style>
+  </defs>
+  <rect width="1200" height="720" fill="#0b1020"/>
+  <text x="40" y="46" class="t k" font-size="24">五大核心组件</text>
+  <text x="40" y="70" class="m" font-size="13.5">元模型是共同语言；五大组件围绕它分工 —— 建模 · 存储 · 动作 · 计算 · 集成</text>
+
+  <!-- left rail: metamodel -->
+  <rect x="40" y="104" width="200" height="560" rx="14" fill="#0f1d38" stroke="#22d3ee" stroke-width="1.4"/>
+  <text x="140" y="150" text-anchor="middle" fill="#22d3ee" class="k" font-size="16">本体元模型</text>
+  <text x="140" y="172" text-anchor="middle" class="m" font-size="12">Metamodel</text>
+  <text x="140" y="196" text-anchor="middle" class="m mono" font-size="11">cmx-onto-model</text>
+  <line x1="70" y1="214" x2="210" y2="214" stroke="#1c2b4a"/>
+  <g text-anchor="middle" font-size="12" class="t">
+    <text x="140" y="248">对象 · 属性</text>
+    <text x="140" y="278">关系 · 接口</text>
+    <text x="140" y="308">共享属性</text>
+    <text x="140" y="338">动作 · 函数</text>
+    <text x="140" y="368">版本</text>
+  </g>
+  <text x="140" y="420" text-anchor="middle" class="m" font-size="11">↓ 共同语言</text>
+  <text x="140" y="440" text-anchor="middle" class="m" font-size="11">驱动五大组件</text>
+
+  <!-- rows -->
+  <!-- row helper geometry: x=270 w=890 h=98 step=112 startY=104 -->
+  <g>
+    <!-- 1 -->
+    <rect x="270" y="104" width="890" height="98" rx="12" fill="#101a30" stroke="#22c55e"/>
+    <circle cx="308" cy="140" r="20" fill="#0d2018" stroke="#22c55e"/><text x="308" y="146" text-anchor="middle" fill="#4ade80" class="k" font-size="16">1</text>
+    <text x="346" y="136" class="t k" font-size="16">本体建模引擎（语义核心）</text>
+    <text x="346" y="158" class="m" font-size="12.5">元模型 CRUD + 结构化校验 + 发布/版本快照 + 建模台</text>
+    <g class="chip" fill="#9fb3d1"><text x="346" y="184">om_* 持久化</text><text x="470" y="184">GET /manifest</text><text x="600" y="184">POST /publish</text><text x="720" y="184">om_version</text></g>
+    <rect x="1030" y="126" width="106" height="28" rx="14" fill="#0d2018" stroke="#22c55e"/><text x="1083" y="145" text-anchor="middle" fill="#4ade80" class="k" font-size="12.5">✅ O1</text>
+
+    <!-- 2 -->
+    <rect x="270" y="216" width="890" height="98" rx="12" fill="#101a30" stroke="#22c55e"/>
+    <circle cx="308" cy="252" r="20" fill="#0d2018" stroke="#22c55e"/><text x="308" y="258" text-anchor="middle" fill="#4ade80" class="k" font-size="16">2</text>
+    <text x="346" y="248" class="t k" font-size="16">对象存储与索引引擎（Object Store &amp; Index）</text>
+    <text x="346" y="270" class="m" font-size="12.5">Per-Type 物化表 + 统一边表 + 对象集代数编译器 + 聚合</text>
+    <g class="chip" fill="#9fb3d1"><text x="346" y="296" class="mono">oo_&lt;type&gt;</text><text x="452" y="296" class="mono">ol_edge</text><text x="540" y="296">Search-Around 双向</text><text x="700" y="296">∪ ∩ − / Filter</text><text x="830" y="296">Count/GroupSum</text></g>
+    <rect x="1030" y="238" width="106" height="28" rx="14" fill="#0d2018" stroke="#22c55e"/><text x="1083" y="257" text-anchor="middle" fill="#4ade80" class="k" font-size="12.5">✅ O2</text>
+
+    <!-- 3 -->
+    <rect x="270" y="328" width="890" height="98" rx="12" fill="#0e1526" stroke="#33405c" stroke-dasharray="5 4"/>
+    <circle cx="308" cy="364" r="20" fill="#161b2b" stroke="#54607e"/><text x="308" y="370" text-anchor="middle" class="m k" font-size="16">3</text>
+    <text x="346" y="360" class="t k" font-size="16">动作引擎（Action Engine）</text>
+    <text x="346" y="382" class="m" font-size="12.5">动作类型 → 校验 → 事务写回 → Outbox 副作用 → 审计</text>
+    <g class="chip" fill="#7c8aa8"><text x="346" y="408">校验接 rules</text><text x="470" y="408">流程接 flow</text><text x="590" y="408">dry-run 试算</text><text x="710" y="408" class="mono">oe_* 审计</text></g>
+    <rect x="1030" y="350" width="106" height="28" rx="14" fill="#161b2b" stroke="#54607e"/><text x="1083" y="369" text-anchor="middle" class="m k" font-size="12.5">○ O4</text>
+
+    <!-- 4 -->
+    <rect x="270" y="440" width="890" height="98" rx="12" fill="#0e1526" stroke="#33405c" stroke-dasharray="5 4"/>
+    <circle cx="308" cy="476" r="20" fill="#161b2b" stroke="#54607e"/><text x="308" y="482" text-anchor="middle" class="m k" font-size="16">4</text>
+    <text x="346" y="472" class="t k" font-size="16">函数与计算引擎（Function &amp; Compute）</text>
+    <text x="346" y="494" class="m" font-size="12.5">派生属性 · 查询函数 · 聚合（吃对象集，出标量/对象集）</text>
+    <g class="chip" fill="#7c8aa8"><text x="346" y="520">FEEL / Rhai 载体</text><text x="490" y="520">派生「客户总额」</text><text x="640" y="520">聚合接 cmx-agg</text></g>
+    <rect x="1030" y="462" width="106" height="28" rx="14" fill="#161b2b" stroke="#54607e"/><text x="1083" y="481" text-anchor="middle" class="m k" font-size="12.5">○ O5</text>
+
+    <!-- 5 -->
+    <rect x="270" y="552" width="890" height="98" rx="12" fill="#0e1526" stroke="#33405c" stroke-dasharray="5 4"/>
+    <circle cx="308" cy="588" r="20" fill="#161b2b" stroke="#54607e"/><text x="308" y="594" text-anchor="middle" class="m k" font-size="16">5</text>
+    <text x="346" y="584" class="t k" font-size="16">数据集成与管道（Object Data Funnel）</text>
+    <text x="346" y="606" class="m" font-size="12.5">SourceConnector + Mapping + 全量/增量灌入 + 管道图</text>
+    <g class="chip" fill="#7c8aa8"><text x="346" y="632">从 fico 表灌 10w+ 对象</text><text x="520" y="632">接异步任务中心</text><text x="660" y="632">物化进 oo_/ol_edge</text></g>
+    <rect x="1030" y="574" width="106" height="28" rx="14" fill="#161b2b" stroke="#54607e"/><text x="1083" y="593" text-anchor="middle" class="m k" font-size="12.5">○ O3</text>
+  </g>
+
+  <g stroke="#22d3ee" stroke-width="1.3" opacity=".5" marker-end="url(#a3)" fill="none">
+    <path d="M240,153 C258,153 258,153 268,153"/>
+    <path d="M240,200 C258,255 258,255 268,265"/>
+  </g>
+  <text x="40" y="700" class="m" font-size="12">绿=已交付（真机 boot + curl E2E + Rust 单测全绿）；虚线=路线图既定，遵循「真机 + 零回归门」纪律。</text>
+</svg>

@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" font-family="'Segoe UI','PingFang SC',system-ui,sans-serif">
+  <defs>
+    <marker id="a6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#22d3ee"/></marker>
+    <clipPath id="mc"><rect x="470" y="250" width="150" height="92" rx="9"/></clipPath>
+    <clipPath id="mc2"><rect x="680" y="286" width="120" height="66" rx="9"/></clipPath>
+    <style>.t{fill:#e6ecf5}.m{fill:#94a3b8}.mono{font-family:ui-monospace,Menlo,Consolas,monospace}.k{font-weight:700}.chip{font-size:11px}</style>
+  </defs>
+  <rect width="1200" height="800" fill="#0b1020"/>
+  <text x="40" y="44" class="t k" font-size="24">前端：一台三面板 · 图 ⇄ 规格 ⇄ 后端 双向同步</text>
+  <text x="40" y="68" class="m" font-size="13.5">图为先 + 强类型 Inspector；单一内存真相 <tspan class="mono">OntologySpec</tspan>；native 四区工作台 · <tspan class="mono">portal.onto.designer</tspan></text>
+
+  <!-- model strip -->
+  <rect x="40" y="86" width="1120" height="30" rx="8" fill="#0f1a2e" stroke="#243049"/>
+  <text x="56" y="106" class="m" font-size="12"><tspan class="t k">model 区</tspan> · 本体元信息：名称 / 版本 / 发布状态（已同步·未保存）/ 各类型计数</text>
+
+  <!-- Explorer -->
+  <rect x="40" y="128" width="300" height="300" rx="12" fill="#101a30" stroke="#243049"/>
+  <text x="58" y="152" class="t k" font-size="14">explorer · 类型浏览器</text>
+  <g font-size="12.5">
+    <text x="58" y="182" class="t">📦 对象类型 <tspan class="m">5</tspan></text>
+    <text x="58" y="208" class="t">🔗 关系类型 <tspan class="m">3</tspan></text>
+    <text x="58" y="234" class="t">◈ 接口 <tspan class="m">2</tspan></text>
+    <text x="58" y="260" class="t">⊞ 共享属性 <tspan class="m">3</tspan></text>
+    <text x="58" y="286" class="t">⚡ 动作类型 <tspan class="m">3</tspan></text>
+    <text x="58" y="312" class="t">ƒ 函数 <tspan class="m">2</tspan></text>
+  </g>
+  <text x="58" y="350" class="m" font-size="11">分组折叠 + 查找 + 计数徽标</text>
+  <text x="58" y="370" class="m" font-size="11">点选 → 同步高亮画布/属性</text>
+  <rect x="58" y="386" width="264" height="26" rx="7" fill="#0d1526" stroke="#334"/>
+  <text x="72" y="404" class="m mono" font-size="11">🔍 查找类型…</text>
+
+  <!-- Canvas (star) -->
+  <rect x="356" y="128" width="500" height="300" rx="12" fill="#0c1220" stroke="#22d3ee" stroke-width="1.4"/>
+  <text x="374" y="152" class="k" fill="#67e8f9" font-size="14">content · 本体图 &lt;cmx-ontology-graph&gt;</text>
+  <text x="374" y="170" class="m" font-size="11">富卡片 · 拖拽布局 · 右缘拉线建关系 · 状态描边 · 画布 100% 拉伸</text>
+  <!-- mini card A (rounded top bar CLIPPED = 本次修复) -->
+  <rect x="470" y="250" width="150" height="92" rx="9" fill="#121a2e" stroke="#22c55e"/>
+  <rect x="470" y="250" width="150" height="8" fill="#22d3ee" clip-path="url(#mc)"/>
+  <text x="484" y="278" class="t k" font-size="12">O2订单</text>
+  <text x="484" y="293" class="m mono" font-size="9.5">qo_Ord</text>
+  <line x1="470" y1="300" x2="620" y2="300" stroke="#243049"/>
+  <text x="484" y="318" class="mono" font-size="10" fill="#22d3ee">◇ oid <tspan class="m">long</tspan></text>
+  <text x="484" y="334" class="mono" font-size="10" fill="#e6ecf5">· amount <tspan class="m">decimal</tspan></text>
+  <circle cx="620" cy="270" r="5" fill="#22d3ee" stroke="#121a2e" stroke-width="1.5"/>
+  <!-- mini card B -->
+  <rect x="680" y="286" width="120" height="66" rx="9" fill="#121a2e" stroke="#f59e0b" stroke-dasharray="5 3"/>
+  <rect x="680" y="286" width="120" height="8" fill="#f59e0b" clip-path="url(#mc2)"/>
+  <text x="694" y="314" class="t k" font-size="12">O2客户</text>
+  <text x="694" y="329" class="m mono" font-size="9.5">qo_Cust</text>
+  <!-- edge -->
+  <path d="M620,270 C660,270 650,306 680,312" stroke="#64748b" stroke-width="1.6" fill="none" marker-end="url(#a6)"/>
+  <text x="628" y="292" class="m" font-size="9.5">places</text>
+  <text x="374" y="410" class="chip" fill="#4ade80">✔ 本次修复：画布上下左右 100% 拉伸 · 卡片色条裁剪至圆角（左上/右上角闭合）</text>
+
+  <!-- Inspector -->
+  <rect x="872" y="128" width="288" height="300" rx="12" fill="#101a30" stroke="#243049"/>
+  <text x="890" y="152" class="t k" font-size="14">property · 强类型 Inspector</text>
+  <text x="890" y="172" class="m" font-size="11">对象 / 关系 / 动作 / 函数 Tab</text>
+  <rect x="890" y="184" width="252" height="150" rx="8" fill="#0d1526" stroke="#334"/>
+  <text x="904" y="206" class="m" font-size="11">属性表（UI2）</text>
+  <g font-size="11" class="mono">
+    <text x="904" y="228" fill="#22d3ee">◇ oid <tspan class="m">long · PK</tspan></text>
+    <text x="904" y="250" fill="#e6ecf5">⌾ name <tspan fill="#ef4444">*</tspan> <tspan class="m">string</tspan></text>
+    <text x="904" y="272" fill="#e6ecf5">· amount <tspan class="m">decimal</tspan> <tspan fill="#6366f1">Money</tspan></text>
+    <text x="904" y="294" class="m">拖排 · 语义类型 · 引用共享属性</text>
+    <text x="904" y="316" class="m">主键/标题/必填/索引 开关</text>
+  </g>
+  <text x="890" y="360" class="m" font-size="11">编辑即写回 Spec → 画布即时重画</text>
+  <text x="890" y="380" class="m" font-size="11">破坏性变更弹专业对话框（UI4）</text>
+
+  <!-- Spec hub -->
+  <rect x="430" y="486" width="340" height="60" rx="12" fill="#0f1d38" stroke="#22d3ee" stroke-width="1.6"/>
+  <text x="600" y="512" text-anchor="middle" class="k" fill="#22d3ee" font-size="15">OntologySpec</text>
+  <text x="600" y="532" text-anchor="middle" class="m" font-size="11.5">单一内存真相（{nodes, edges, actions, functions}）</text>
+
+  <!-- arrows panels <-> spec -->
+  <g stroke="#22d3ee" stroke-width="1.5" fill="none" marker-end="url(#a6)" marker-start="url(#a6)" opacity=".85">
+    <path d="M190,428 C190,470 380,478 470,492"/>
+    <path d="M606,428 L600,484"/>
+    <path d="M1016,428 C1016,470 820,478 740,492"/>
+  </g>
+  <text x="250" y="470" class="m" font-size="11">选中/编辑 ⇄ 高亮</text>
+  <text x="612" y="470" class="m" font-size="11">图 ⇄ 规格</text>
+  <text x="815" y="470" class="m" font-size="11">编辑 ⇄ 重画</text>
+
+  <!-- backend -->
+  <rect x="430" y="596" width="340" height="72" rx="12" fill="#0e1730" stroke="#243049"/>
+  <text x="600" y="620" text-anchor="middle" class="t k" font-size="13">后端契约 · <tspan class="mono" fill="#67e8f9">/api/onto/v1</tspan></text>
+  <text x="600" y="640" text-anchor="middle" class="m" font-size="11">粒度化保存：object-types / link-types / interfaces …</text>
+  <text x="600" y="658" text-anchor="middle" class="m" font-size="11">POST /publish · GET /manifest · GET /stats</text>
+  <path d="M600,546 L600,594" stroke="#22d3ee" stroke-width="1.5" fill="none" marker-end="url(#a6)" marker-start="url(#a6)"/>
+  <text x="612" y="576" class="m" font-size="11">保存/装载</text>
+  <text x="782" y="636" class="m mono" font-size="11">→ om_* / 门户 F3 反代</text>
+
+  <!-- UI feature chips -->
+  <rect x="40" y="690" width="1120" height="90" rx="12" fill="#0e1526" stroke="#243049"/>
+  <text x="58" y="714" class="m k" font-size="12">落地路线 UI0–UI5（CDP 全绿）+ 组件 vitest 11</text>
+  <g class="chip">
+    <text x="58" y="740" fill="#67e8f9">UI2 属性编辑深化</text><text x="58" y="758" class="m">拖排/语义类型/引用共享属性</text>
+    <text x="250" y="740" fill="#4ade80">UI3 画布直接操作</text><text x="250" y="758" class="m">拉线速建气泡 · 内联速建 · 自关联</text>
+    <text x="510" y="740" fill="#fbbf24">UI4 演进安全</text><text x="510" y="758" class="m">破坏性变更专业对话框 + 影响面</text>
+    <text x="760" y="740" fill="#c4b5fd">UI5 动能层</text><text x="760" y="758" class="m">动作/函数编辑器（FEEL 内联/四段）</text>
+    <text x="980" y="740" fill="#e6ecf5">@cmx/ontology-graph</text><text x="980" y="758" class="m">独立 Web Component（零框架）</text>
+  </g>
+</svg>

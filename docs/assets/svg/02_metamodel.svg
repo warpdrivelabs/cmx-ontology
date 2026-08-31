@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 740" font-family="'Segoe UI','PingFang SC',system-ui,sans-serif">
+  <defs>
+    <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#64748b"/></marker>
+    <style>
+      .t{fill:#e6ecf5}.m{fill:#94a3b8}.mono{font-family:ui-monospace,Menlo,Consolas,monospace}
+      .k{font-weight:700}.tbl{font-size:11px}
+    </style>
+  </defs>
+  <rect width="1200" height="740" fill="#0b1020"/>
+  <text x="40" y="46" class="t k" font-size="24">本体元模型（Metamodel）· 六元 + 版本</text>
+  <text x="40" y="70" class="m" font-size="13.5">名词（对象）· 字段（属性）· 连线（关系）· 多态（接口/共享属性）· 动词（动作）· 计算（函数）</text>
+
+  <!-- Version band (behind) -->
+  <rect x="34" y="96" width="1132" height="600" rx="16" fill="none" stroke="#8b5cf6" stroke-dasharray="7 5" opacity=".55"/>
+  <rect x="470" y="86" width="260" height="26" rx="13" fill="#160f2e" stroke="#8b5cf6"/>
+  <text x="600" y="104" text-anchor="middle" fill="#a78bfa" class="k" font-size="12">发布快照 Version · <tspan class="mono">om_version</tspan></text>
+
+  <!-- Center: ObjectType with properties -->
+  <rect x="450" y="250" width="300" height="240" rx="12" fill="#101a30" stroke="#22d3ee" stroke-width="1.6"/>
+  <rect x="450" y="250" width="300" height="7" rx="3" fill="#22d3ee"/>
+  <text x="470" y="286" class="t k" font-size="16">对象类型 ObjectType</text>
+  <text x="470" y="304" class="m mono" font-size="11.5">om_object_type · 名词</text>
+  <line x1="450" y1="316" x2="750" y2="316" stroke="#243049"/>
+  <g class="tbl">
+    <text x="470" y="340" fill="#22d3ee">◇ <tspan class="t mono">id</tspan> <tspan class="m">long · 主键</tspan></text>
+    <text x="470" y="362" fill="#22d3ee">⌾ <tspan class="t mono">name</tspan> <tspan fill="#ef4444">*</tspan> <tspan class="m">string · 标题属性</tspan></text>
+    <text x="470" y="384" class="t mono">·  region <tspan class="m">string</tspan> <tspan fill="#f59e0b">⚡</tspan></text>
+    <text x="470" y="406" class="t mono">·  amount <tspan class="m">decimal</tspan> <tspan fill="#6366f1">Money</tspan></text>
+    <text x="470" y="434" class="m">属性 PropertyType（内嵌字段）：</text>
+    <text x="470" y="454" class="m" font-size="10.5">baseType · required · ◇主键 · ⌾标题 · ⚡索引</text>
+    <text x="470" y="474" class="m" font-size="10.5">semanticType 语义类型 · status 状态机</text>
+  </g>
+
+  <!-- LinkType (top-left) -->
+  <rect x="120" y="140" width="290" height="120" rx="12" fill="#101a30" stroke="#334d73"/>
+  <text x="140" y="168" class="t k" font-size="15">关系类型 LinkType</text>
+  <text x="140" y="186" class="m mono" font-size="11.5">om_link_type · 连线</text>
+  <text x="140" y="212" class="t" font-size="12">两端 <tspan class="mono" fill="#22d3ee">object_type_a</tspan> ↔ <tspan class="mono" fill="#22d3ee">object_type_b</tspan></text>
+  <text x="140" y="232" class="m" font-size="11.5">基数 one/oneToMany/manyToMany · 角色 A→B / B→A</text>
+  <text x="140" y="250" class="m" font-size="11.5">物化为统一边表 <tspan class="mono" fill="#22d3ee">ol_edge</tspan></text>
+
+  <!-- Interface + SharedProperty (bottom-left) -->
+  <rect x="120" y="470" width="300" height="150" rx="12" fill="#141033" stroke="#8b5cf6" stroke-dasharray="4 3"/>
+  <text x="140" y="498" fill="#a78bfa" class="k" font-size="15">接口 Interface</text>
+  <text x="140" y="516" class="m mono" font-size="11.5">om_interface · «interface» 多态</text>
+  <text x="140" y="538" class="m" font-size="11.5">对象类型可 implements 多个接口</text>
+  <line x1="140" y1="552" x2="400" y2="552" stroke="#3a2f5e"/>
+  <text x="140" y="574" fill="#a78bfa" class="k" font-size="14">共享属性 SharedProperty ⊞</text>
+  <text x="140" y="592" class="m mono" font-size="11.5">om_shared_property · 标准化字段</text>
+  <text x="140" y="610" class="m" font-size="11.5">属性可「引用」共享属性统一语义/类型</text>
+
+  <!-- ActionType (top-right) -->
+  <rect x="800" y="150" width="300" height="120" rx="12" fill="#101a30" stroke="#f59e0b"/>
+  <text x="820" y="178" fill="#fbbf24" class="k" font-size="15">⚡ 动作类型 ActionType</text>
+  <text x="820" y="196" class="m mono" font-size="11.5">om_action_type · 动词（写）</text>
+  <text x="820" y="220" class="t" font-size="12">编辑管线：校验 → 事务落库 → 副作用</text>
+  <text x="820" y="240" class="m" font-size="11.5">参数 · 前置校验（接 rules）· dry-run 试算</text>
+  <text x="820" y="258" class="m" font-size="11.5">Outbox 触发流程（接 flow）· oe_* 审计</text>
+
+  <!-- FunctionType (bottom-right) -->
+  <rect x="800" y="440" width="300" height="120" rx="12" fill="#101a30" stroke="#22c55e"/>
+  <text x="820" y="468" fill="#4ade80" class="k" font-size="15">ƒ 函数类型 FunctionType</text>
+  <text x="820" y="486" class="m mono" font-size="11.5">om_function · 计算（读）</text>
+  <text x="820" y="510" class="t" font-size="12">派生属性 · 查询函数 · 聚合</text>
+  <text x="820" y="530" class="m" font-size="11.5">FEEL / Rhai 载体；吃对象集、出标量/对象集</text>
+  <text x="820" y="548" class="m" font-size="11.5">聚合接 cmx-agg（按维度 GMV/Count）</text>
+
+  <!-- edges -->
+  <g stroke="#5b6b8c" stroke-width="1.5" fill="none" marker-end="url(#a2)">
+    <path d="M410,205 C470,215 470,235 470,248"/>            <!-- link -> object a -->
+    <path d="M410,232 C560,300 610,240 640,248"/>            <!-- link -> object b -->
+    <path d="M420,520 C520,510 560,470 560,458" marker-start="url(#a2)"/> <!-- interface <-> object implements -->
+    <path d="M420,560 C560,560 600,470 600,462"/>            <!-- sharedprop -> property -->
+    <path d="M800,215 C770,255 745,290 720,300" marker-start="url(#a2)"/> <!-- action -> object -->
+    <path d="M800,500 C770,470 745,440 720,430"/>            <!-- function -> object -->
+  </g>
+  <g class="m" font-size="11">
+    <text x="380" y="195">a/b 两端</text>
+    <text x="452" y="540">implements</text>
+    <text x="452" y="588">引用</text>
+    <text x="735" y="270">操作（写）</text>
+    <text x="735" y="452">计算（读）</text>
+  </g>
+
+  <text x="40" y="716" class="m" font-size="12">共八种元素同库同契约（<tspan class="mono">OntologyStore</tspan>）· 结构化校验在芯层 · <tspan class="mono">GET /manifest</tspan> 出全量清单 · <tspan class="mono">POST /publish</tspan> 冻结为不可变版本。</text>
+</svg>

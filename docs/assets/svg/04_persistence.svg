@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" font-family="'Segoe UI','PingFang SC',system-ui,sans-serif">
+  <defs>
+    <marker id="a4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#f59e0b"/></marker>
+    <style>.t{fill:#e6ecf5}.m{fill:#94a3b8}.mono{font-family:ui-monospace,Menlo,Consolas,monospace}.k{font-weight:700}.col{font-size:10.5px}.tn{font-size:12.5px;font-weight:700}</style>
+  </defs>
+  <rect width="1200" height="760" fill="#0b1020"/>
+  <text x="40" y="44" class="t k" font-size="24">数据持久化 · 双层模型（db-per-tenant）</text>
+  <text x="40" y="68" class="m" font-size="13.5">元数据层（本体定义单一真相）+ 对象数据层（Per-Type 物化 + 统一关系边表）</text>
+
+  <!-- metadata layer -->
+  <rect x="30" y="90" width="1140" height="196" rx="14" fill="#0e1424" stroke="#5a4420"/>
+  <rect x="46" y="80" width="330" height="26" rx="13" fill="#241a08" stroke="#f59e0b"/>
+  <text x="60" y="98" fill="#fbbf24" class="k" font-size="12.5">元数据层 · <tspan class="mono">om_*</tspan> · 7 表 · cmx-onto-store-pg/ddl.rs</text>
+
+  <!-- 7 om_ cards: y=118 h=150? use two rows: 4 top + 3 bottom -->
+  <g>
+    <!-- row1 -->
+    <g transform="translate(46,118)">
+      <rect width="266" height="72" rx="9" fill="#12192b" stroke="#33405c"/><rect width="266" height="5" rx="2" fill="#f59e0b"/>
+      <text x="14" y="26" class="t tn mono">om_object_type</text>
+      <text x="14" y="44" class="m col mono">api_name ◇PK · display_name</text>
+      <text x="14" y="60" class="m col mono">properties jsonb · status · color</text>
+    </g>
+    <g transform="translate(330,118)">
+      <rect width="266" height="72" rx="9" fill="#12192b" stroke="#33405c"/><rect width="266" height="5" rx="2" fill="#f59e0b"/>
+      <text x="14" y="26" class="t tn mono">om_link_type</text>
+      <text x="14" y="44" class="m col mono">api_name · object_type_a</text>
+      <text x="14" y="60" class="m col mono">object_type_b · cardinality</text>
+    </g>
+    <g transform="translate(614,118)">
+      <rect width="266" height="72" rx="9" fill="#12192b" stroke="#33405c"/><rect width="266" height="5" rx="2" fill="#f59e0b"/>
+      <text x="14" y="26" class="t tn mono">om_interface</text>
+      <text x="14" y="44" class="m col mono">api_name · display_name</text>
+      <text x="14" y="60" class="m col mono">properties jsonb（多态标准）</text>
+    </g>
+    <g transform="translate(898,118)">
+      <rect width="256" height="72" rx="9" fill="#12192b" stroke="#33405c"/><rect width="256" height="5" rx="2" fill="#f59e0b"/>
+      <text x="14" y="26" class="t tn mono">om_shared_property</text>
+      <text x="14" y="44" class="m col mono">api_name · base_type</text>
+      <text x="14" y="60" class="m col mono">semantic_type（引用标准）</text>
+    </g>
+    <!-- row2 -->
+    <g transform="translate(46,202)">
+      <rect width="266" height="72" rx="9" fill="#12192b" stroke="#33405c"/><rect width="266" height="5" rx="2" fill="#f59e0b"/>
+      <text x="14" y="26" class="t tn mono">om_action_type</text>
+      <text x="14" y="44" class="m col mono">api_name · params jsonb</text>
+      <text x="14" y="60" class="m col mono">validations · effects（O4）</text>
+    </g>
+    <g transform="translate(330,202)">
+      <rect width="266" height="72" rx="9" fill="#12192b" stroke="#33405c"/><rect width="266" height="5" rx="2" fill="#f59e0b"/>
+      <text x="14" y="26" class="t tn mono">om_function</text>
+      <text x="14" y="44" class="m col mono">api_name · lang（FEEL/Rhai）</text>
+      <text x="14" y="60" class="m col mono">body · kind（派生/查询）O5</text>
+    </g>
+    <g transform="translate(614,202)">
+      <rect width="540" height="72" rx="9" fill="#160f2e" stroke="#8b5cf6"/><rect width="540" height="5" rx="2" fill="#8b5cf6"/>
+      <text x="14" y="26" class="tn mono" fill="#c4b5fd">om_version</text>
+      <text x="14" y="44" class="m col mono">version · summary · snapshot jsonb（全量冻结）· published_at</text>
+      <text x="14" y="60" class="m col">POST /publish 把 6 类元素快照进不可变版本，供回溯/对比</text>
+    </g>
+  </g>
+
+  <!-- arrow driving materialization -->
+  <path d="M179,276 C179,320 179,340 179,360" stroke="#f59e0b" stroke-width="1.6" fill="none" marker-end="url(#a4)" stroke-dasharray="6 4"/>
+  <text x="196" y="330" fill="#fbbf24" class="k" font-size="12">发布时按元模型建物化表</text>
+  <text x="196" y="348" class="m" font-size="11">om_object_type → oo_&lt;type&gt; DDL</text>
+
+  <!-- object data layer -->
+  <rect x="30" y="376" width="1140" height="330" rx="14" fill="#0c1626" stroke="#164a55"/>
+  <rect x="46" y="366" width="360" height="26" rx="13" fill="#06222a" stroke="#22d3ee"/>
+  <text x="60" y="384" fill="#67e8f9" class="k" font-size="12.5">对象数据层 · O2 物化 · object_store.rs</text>
+
+  <!-- oo_<type> -->
+  <rect x="60" y="412" width="520" height="272" rx="12" fill="#0f1d2e" stroke="#2b4a5c"/>
+  <rect x="60" y="412" width="520" height="6" rx="3" fill="#22d3ee"/>
+  <text x="80" y="446" class="t k mono" font-size="17">oo_&lt;type&gt;</text>
+  <text x="80" y="466" class="m" font-size="12">每个对象类型一张物化表（发布时建/幂等补列）</text>
+  <line x1="80" y1="478" x2="560" y2="478" stroke="#1c3446"/>
+  <g class="mono" font-size="12.5">
+    <text x="80" y="504" fill="#22d3ee">◇ pk        <tspan class="m">text  · 主键（业务 PK）</tspan></text>
+    <text x="80" y="528" fill="#e6ecf5">⌾ title     <tspan class="m">text  · 标题（idx_&lt;t&gt;_title 索引）</tspan></text>
+    <text x="80" y="552" fill="#e6ecf5">  props     <tspan class="m">jsonb · 全部属性（半结构，随元模型演进）</tspan></text>
+    <text x="80" y="576" fill="#e6ecf5">  created_at / updated_at</text>
+  </g>
+  <text x="80" y="612" class="m" font-size="11.5">· 事务 upsert（对象 + 其边一并写）</text>
+  <text x="80" y="632" class="m" font-size="11.5">· props JSONB → 演进免频繁 DDL；标题/索引列走真列</text>
+  <text x="80" y="652" class="m" font-size="11.5">· 查询走对象集代数编译（见下一图）</text>
+
+  <!-- ol_edge -->
+  <rect x="620" y="412" width="520" height="272" rx="12" fill="#0f1d2e" stroke="#2b4a5c"/>
+  <rect x="620" y="412" width="520" height="6" rx="3" fill="#22d3ee"/>
+  <text x="640" y="446" class="t k mono" font-size="17">ol_edge</text>
+  <text x="640" y="466" class="m" font-size="12">统一关系边表 —— 承载所有 LinkType 的实例</text>
+  <line x1="640" y1="478" x2="1120" y2="478" stroke="#1c3446"/>
+  <g class="mono" font-size="12.5">
+    <text x="640" y="504" fill="#e6ecf5">  link      <tspan class="m">text  · 关系 apiName</tspan></text>
+    <text x="640" y="528" fill="#e6ecf5">  a_pk      <tspan class="m">text  · 源对象 PK</tspan></text>
+    <text x="640" y="552" fill="#e6ecf5">  b_pk      <tspan class="m">text  · 目标对象 PK</tspan></text>
+    <text x="640" y="576" fill="#e6ecf5">  props     <tspan class="m">jsonb · 关系属性 · created_at</tspan></text>
+  </g>
+  <text x="640" y="612" class="k mono" fill="#67e8f9" font-size="12">idx_ol_edge_fwd (link, a_pk)</text>
+  <text x="640" y="632" class="k mono" fill="#67e8f9" font-size="12">idx_ol_edge_rev (link, b_pk)</text>
+  <text x="640" y="656" class="m" font-size="11.5">→ Search-Around 双向遍历 = 单表 JOIN（无 N 张连接表）</text>
+
+  <text x="40" y="736" class="m" font-size="12">多租户：<tspan class="mono">db-per-tenant</tspan>，每租户库各自持有 <tspan class="mono">om_*</tspan> + <tspan class="mono">oo_*</tspan> + <tspan class="mono">ol_edge</tspan>；租户首次访问懒建表（对齐 flow/rule 的 <tspan class="mono">&lt;tenant&gt;</tspan> 库范式）。</text>
+</svg>

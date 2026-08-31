@@ -65,7 +65,10 @@ async fn main() -> cmx_web_chassis::Result<()> {
                 ..cmx_form::serve::PageServeConfig::from_assets()
             },
         ))
-        .route("/onto/v1/openapi.json", axum::routing::get(openapi_json));
+        .route("/onto/v1/openapi.json", axum::routing::get(openapi_json))
+        // O7 headless：Swagger UI（/api/onto/v1/docs）+ SSE 变更流（/api/onto/v1/events）——免认证层。
+        .route("/onto/v1/docs", axum::routing::get(cmx_onto_app::swagger_ui))
+        .route("/onto/v1/events", axum::routing::get(cmx_onto_app::sse_events));
     let app_router = axum::Router::new()
         // 根 → 本体建模控制台（免认证，前端 fetch /api/onto/v1/*）。
         .route("/", axum::routing::get(cmx_onto_app::dashboard::dashboard))

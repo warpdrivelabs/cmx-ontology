@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 660" font-family="'Segoe UI','PingFang SC',system-ui,sans-serif">
+  <defs><style>.t{fill:#e6ecf5}.m{fill:#94a3b8}.mono{font-family:ui-monospace,Menlo,monospace}.k{font-weight:700}.acc{font-size:11px;font-style:italic;fill:#7c8aa8}.dl{font-size:11.5px;fill:#b8c4da}</style></defs>
+  <rect width="1200" height="660" fill="#0b1020"/>
+  <text x="40" y="44" class="t k" font-size="24">落地路线图 O0–O8</text>
+  <text x="40" y="68" class="m" font-size="13.5">每个里程碑：真机 boot + curl E2E + Rust 单测 + CDP 前端 + 零回归门（对齐 flow 159/159、rules 223 断言范式）</text>
+
+  <!-- ribbon -->
+  <line x1="86" y1="112" x2="1114" y2="112" stroke="#243049" stroke-width="2"/>
+  <line x1="86" y1="112" x2="330" y2="112" stroke="#22c55e" stroke-width="3"/>
+  <g font-size="12" class="k" text-anchor="middle">
+    <!-- delivered -->
+    <circle cx="86" cy="112" r="16" fill="#0d2018" stroke="#22c55e" stroke-width="2"/><text x="86" y="117" fill="#4ade80">O0</text>
+    <circle cx="208" cy="112" r="16" fill="#0d2018" stroke="#22c55e" stroke-width="2"/><text x="208" y="117" fill="#4ade80">O1</text>
+    <circle cx="330" cy="112" r="16" fill="#0d2018" stroke="#22c55e" stroke-width="2"/><text x="330" y="117" fill="#4ade80">O2</text>
+    <!-- planned -->
+    <circle cx="452" cy="112" r="16" fill="#12192b" stroke="#54607e"/><text x="452" y="117" class="m">O3</text>
+    <circle cx="574" cy="112" r="16" fill="#12192b" stroke="#54607e"/><text x="574" y="117" class="m">O4</text>
+    <circle cx="696" cy="112" r="16" fill="#12192b" stroke="#54607e"/><text x="696" y="117" class="m">O5</text>
+    <circle cx="818" cy="112" r="16" fill="#12192b" stroke="#54607e"/><text x="818" y="117" class="m">O6</text>
+    <circle cx="940" cy="112" r="16" fill="#12192b" stroke="#54607e"/><text x="940" y="117" class="m">O7</text>
+    <circle cx="1062" cy="112" r="16" fill="#12192b" stroke="#54607e"/><text x="1062" y="117" class="m">O8</text>
+  </g>
+  <rect x="980" y="46" width="180" height="30" rx="15" fill="#0d2018" stroke="#22c55e"/>
+  <text x="1070" y="66" text-anchor="middle" fill="#4ade80" class="k" font-size="12.5">3/9 交付 · 前端 UI0–5 ✅</text>
+
+  <!-- grid 3x3 -->
+  <!-- helper: x=40/428/816 w=356 ; y=150/306/462 h=140 -->
+  <g>
+    <!-- O0 -->
+    <rect x="40" y="150" width="356" height="140" rx="12" fill="#101a30" stroke="#22c55e"/>
+    <text x="58" y="176" class="t k" font-size="15">O0 · 骨架 <tspan fill="#4ade80" font-size="13">✅</tspan></text>
+    <text x="58" y="200" class="dl">独立 ws「一芯多壳」空跑 · <tspan class="mono">:8097</tspan> boot</text>
+    <text x="58" y="220" class="dl">chassis 装配 · 多租户接缝</text>
+    <text x="58" y="264" class="acc">验收：curl /health 绿；门户反代壳挂通</text>
+    <!-- O1 -->
+    <rect x="428" y="150" width="356" height="140" rx="12" fill="#101a30" stroke="#22c55e"/>
+    <text x="446" y="176" class="t k" font-size="15">O1 · 建模引擎 <tspan fill="#4ade80" font-size="13">✅</tspan></text>
+    <text x="446" y="200" class="dl">元模型 CRUD + 结构化校验</text>
+    <text x="446" y="220" class="dl"><tspan class="mono">om_*</tspan> 持久化 + 发布/版本 + 建模台</text>
+    <text x="446" y="264" class="acc">验收：建「客户/订单」本体并发布</text>
+    <!-- O2 -->
+    <rect x="816" y="150" width="356" height="140" rx="12" fill="#101a30" stroke="#22c55e"/>
+    <text x="834" y="176" class="t k" font-size="15">O2 · 对象存储 <tspan fill="#4ade80" font-size="13">✅</tspan></text>
+    <text x="834" y="200" class="dl"><tspan class="mono">oo_&lt;type&gt;</tspan> + <tspan class="mono">ol_edge</tspan> + 对象集代数</text>
+    <text x="834" y="220" class="dl">Search-Around 双向 + 聚合</text>
+    <text x="834" y="264" class="acc">验收：三跳一条 SQL；Rust20 + E2E66 绿</text>
+    <!-- O3 -->
+    <rect x="40" y="306" width="356" height="140" rx="12" fill="#0e1526" stroke="#33405c" stroke-dasharray="5 4"/>
+    <text x="58" y="332" class="t k" font-size="15">O3 · 数据集成 <tspan class="m" font-size="13">○</tspan></text>
+    <text x="58" y="356" class="dl">SourceConnector + Mapping</text>
+    <text x="58" y="376" class="dl">全量/增量灌入 + 管道图 + 任务中心</text>
+    <text x="58" y="420" class="acc">验收：从 fico 表灌 10w+ 对象</text>
+    <!-- O4 -->
+    <rect x="428" y="306" width="356" height="140" rx="12" fill="#0e1526" stroke="#33405c" stroke-dasharray="5 4"/>
+    <text x="446" y="332" class="t k" font-size="15">O4 · 动作引擎 <tspan class="m" font-size="13">○</tspan></text>
+    <text x="446" y="356" class="dl">动作类型 + 校验(rules) + 事务写回</text>
+    <text x="446" y="376" class="dl">Outbox 副作用(flow) + <tspan class="mono">oe_*</tspan> 审计</text>
+    <text x="446" y="420" class="acc">验收：「改签」闭环 + dry-run 试算</text>
+    <!-- O5 -->
+    <rect x="816" y="306" width="356" height="140" rx="12" fill="#0e1526" stroke="#33405c" stroke-dasharray="5 4"/>
+    <text x="834" y="332" class="t k" font-size="15">O5 · 函数计算 <tspan class="m" font-size="13">○</tspan></text>
+    <text x="834" y="356" class="dl">函数引擎(FEEL/Rhai) + 派生属性</text>
+    <text x="834" y="376" class="dl">查询函数 + 聚合(cmx-agg)</text>
+    <text x="834" y="420" class="acc">验收：派生「客户总额」；按区域 GMV</text>
+    <!-- O6 -->
+    <rect x="40" y="462" width="356" height="140" rx="12" fill="#0e1526" stroke="#33405c" stroke-dasharray="5 4"/>
+    <text x="58" y="488" class="t k" font-size="15">O6 · 动态安全 <tspan class="m" font-size="13">○</tspan></text>
+    <text x="58" y="512" class="dl">接 cmx-dataauth：对象/行/列/ReBAC</text>
+    <text x="58" y="532" class="dl">+ Marking · 对象集编译合并残差约束</text>
+    <text x="58" y="576" class="acc">验收：换租户/角色返不同行/脱敏列</text>
+    <!-- O7 -->
+    <rect x="428" y="462" width="356" height="140" rx="12" fill="#0e1526" stroke="#33405c" stroke-dasharray="5 4"/>
+    <text x="446" y="488" class="t k" font-size="15">O7 · API/SDK <tspan class="m" font-size="13">○</tspan></text>
+    <text x="446" y="512" class="dl">REST v1 全量 + OpenAPI/Swagger</text>
+    <text x="446" y="532" class="dl">SSE live + OSDK 代码生成(Rust/TS)</text>
+    <text x="446" y="576" class="acc">验收：生成客户端跑通 CRUD/动作</text>
+    <!-- O8 -->
+    <rect x="816" y="462" width="356" height="140" rx="12" fill="#0e1526" stroke="#33405c" stroke-dasharray="5 4"/>
+    <text x="834" y="488" class="t k" font-size="15">O8 · 前端 + 案例 <tspan class="m" font-size="13">○</tspan></text>
+    <text x="834" y="512" class="dl">四工作台完善 + 门户联邦字节一致</text>
+    <text x="834" y="532" class="dl">端到端案例（客户 360 / 供应链）</text>
+    <text x="834" y="576" class="acc">验收：CDP 全绿；业务角色闭环</text>
+  </g>
+  <text x="40" y="640" class="m" font-size="12">当前已交付 O0/O1/O2（后端）+ UI0–UI5（前端）+ 门户菜单集成；下一步优先 O3 数据集成（让本体"有数据"）或 O4 动作引擎（让本体"能改数据"）。</text>
+</svg>

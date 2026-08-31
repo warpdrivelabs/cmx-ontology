@@ -23,6 +23,34 @@ pub struct PutObjectReq {
     pub title: Option<String>,
 }
 
+/// 乐观锁修改请求体：{ set: {...}, expectedUpdatedAt? }。
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ModifyReq {
+    pub set: Value,
+    pub expected_updated_at: Option<String>,
+}
+
+/// POST /objects/{type}/{pk}/modify —— 乐观锁修改（读改写；expectedUpdatedAt 版本冲突→conflict）。
+pub async fn modify_object(
+    Path((object_type, pk)): Path<(String, String)>,
+    Json(req): Json<ModifyReq>,
+) -> Result<Json<ApiResp<Value>>> {
+    let (status, updated_at, props) = object_store()
+        .modify_with_optlock(&object_type, &pk, &req.set, req.expected_updated_at.as_deref())
+        .await
+        .map_err(|e| OntoError::internal_error(format!("修改对象失败: {e}")))?;
+    // 冲突走 code=0 + data.conflict（对齐 flow 协同 M1 乐观锁；前端据此刷新重试）。
+    Ok(Json(ApiResp::ok(json!({
+        "objectType": object_type,
+        "pk": pk,
+        "status": status,
+        "conflict": status == "conflict",
+        "updatedAt": updated_at,
+        "properties": props,
+    }))))
+}
+
 /// POST /objects/{type} —— upsert 一个对象（按定义校验 + ensure 物化表）。
 pub async fn put_object(
     Path(object_type): Path<String>,

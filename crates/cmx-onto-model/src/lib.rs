@@ -9,11 +9,22 @@ pub mod object_store;
 pub mod objectset;
 pub mod store;
 
+pub mod action;
+pub mod feel;
+pub mod function;
+pub mod authz;
+pub mod funnel;
+
 pub use def::*;
 pub use error::{Error, Result, StoreError, StoreResult};
 pub use object_store::{LinkEnds, LinkResolver, ObjectStore};
 pub use objectset::*;
 pub use store::OntologyStore;
+pub use action::{resolve_edits, resolve_side_effects, validate_params, run_validations, SideEffect, ValidationFailure, ObjectEdit};
+pub use feel::{eval_expression, eval_predicate, FeelError};
+pub use function::{evaluate as evaluate_function, input_specs, check_inputs, InputSpec, FunctionError};
+pub use authz::{residual_set, redact_rows};
+pub use funnel::{map_row, MappedObject, SourceMapping, SyncReport, Violation};
 
 /// 单租户 / 无租户 scope 的默认租户名。
 pub const DEFAULT_TENANT: &str = "default";

@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" font-family="'Segoe UI','PingFang SC',system-ui,sans-serif">
+  <defs>
+    <marker id="a5" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#22c55e"/></marker>
+    <style>.t{fill:#e6ecf5}.m{fill:#94a3b8}.mono{font-family:ui-monospace,Menlo,Consolas,monospace}.k{font-weight:700}
+      .kw{fill:#7dd3fc}.cm{fill:#5f6b82}.lit{fill:#a5b4fc}.pm{fill:#fbbf24}.tb{fill:#e6ecf5}</style>
+  </defs>
+  <rect width="1200" height="800" fill="#0b1020"/>
+  <text x="40" y="44" class="t k" font-size="24">对象集代数（ObjectSet）→ 一条参数化 SQL</text>
+  <text x="40" y="68" class="m" font-size="13.5">递归对象集编译为「产出 pk 的嵌套子查询」；Search-Around 经统一边表 <tspan class="mono">ol_edge</tspan> 遍历 —— 三跳一条 SQL</text>
+
+  <!-- example title -->
+  <rect x="40" y="86" width="1120" height="34" rx="10" fill="#101a30" stroke="#243049"/>
+  <text x="56" y="108" class="t" font-size="13">示例查询：<tspan class="k">「华东区客户 → 下的订单 → 订单内商品 → 商品的供应商」</tspan> <tspan class="m">（Filter + 三跳 Search-Around，终端=Supplier）</tspan></text>
+
+  <!-- LEFT: algebra pipeline -->
+  <text x="44" y="150" class="m k" font-size="12">对象集代数（自内向外求值）</text>
+  <g>
+    <!-- 1 Base -->
+    <rect x="44" y="160" width="380" height="52" rx="10" fill="#0f1d2e" stroke="#22d3ee"/>
+    <text x="62" y="184" class="t k" font-size="14">Base</text><text x="120" y="184" class="mono" fill="#67e8f9" font-size="13">oo_Customer</text>
+    <text x="62" y="202" class="m" font-size="11">起点：某对象类型的全体对象</text>
+    <!-- 2 Filter -->
+    <rect x="44" y="230" width="380" height="52" rx="10" fill="#1a1608" stroke="#f59e0b"/>
+    <text x="62" y="254" class="k" fill="#fbbf24" font-size="14">Filter</text><text x="130" y="254" class="mono t" font-size="12.5">region = '华东'</text>
+    <text x="62" y="272" class="m mono" font-size="11">props ->> 'region' = $1（属性抽文本比较）</text>
+    <!-- 3 hop1 -->
+    <rect x="44" y="300" width="380" height="52" rx="10" fill="#0d2018" stroke="#22c55e"/>
+    <text x="62" y="324" class="k" fill="#4ade80" font-size="13">Search-Around</text><text x="200" y="324" class="mono t" font-size="12">places ▶ fwd → Order</text>
+    <text x="62" y="342" class="m mono" font-size="11">hop1 · ol_edge: a_pk∈源 ⇒ b_pk</text>
+    <!-- 4 hop2 -->
+    <rect x="44" y="370" width="380" height="52" rx="10" fill="#0d2018" stroke="#22c55e"/>
+    <text x="62" y="394" class="k" fill="#4ade80" font-size="13">Search-Around</text><text x="200" y="394" class="mono t" font-size="12">contains ▶ fwd → Product</text>
+    <text x="62" y="412" class="m mono" font-size="11">hop2 · 复用同一张 ol_edge</text>
+    <!-- 5 hop3 -->
+    <rect x="44" y="440" width="380" height="52" rx="10" fill="#0d2018" stroke="#22c55e"/>
+    <text x="62" y="464" class="k" fill="#4ade80" font-size="13">Search-Around</text><text x="200" y="464" class="mono t" font-size="12">suppliedBy ▶ → Supplier</text>
+    <text x="62" y="482" class="m mono" font-size="11">hop3 · 终端类型 = Supplier</text>
+    <!-- 6 outer -->
+    <rect x="44" y="510" width="380" height="52" rx="10" fill="#0f1d2e" stroke="#22d3ee"/>
+    <text x="62" y="534" class="t k" font-size="13">外层取行</text><text x="150" y="534" class="mono" fill="#67e8f9" font-size="12.5">oo_Supplier(pk,title,props)</text>
+    <text x="62" y="552" class="m" font-size="11">据终端类型取完整对象行</text>
+  </g>
+  <g stroke="#3f8a5a" stroke-width="1.5" marker-end="url(#a5)" fill="none">
+    <line x1="234" y1="212" x2="234" y2="228"/><line x1="234" y1="282" x2="234" y2="298"/>
+    <line x1="234" y1="352" x2="234" y2="368"/><line x1="234" y1="422" x2="234" y2="438"/>
+    <line x1="234" y1="492" x2="234" y2="508"/>
+  </g>
+
+  <!-- RIGHT: compiled SQL -->
+  <rect x="452" y="150" width="708" height="470" rx="12" fill="#080d18" stroke="#243049"/>
+  <text x="470" y="176" class="m k" font-size="12">cmx-onto-store-pg / compile.rs 产出（自内向外嵌套 · 参数化）</text>
+  <line x1="470" y1="186" x2="1142" y2="186" stroke="#1a2338"/>
+  <g class="mono" font-size="12.5" fill="#c7d2e5">
+    <text x="470" y="212"><tspan class="cm">-- 外层：取终端完整行</tspan></text>
+    <text x="470" y="232"><tspan class="kw">SELECT</tspan> <tspan class="tb">pk, title, props</tspan> <tspan class="kw">FROM</tspan> <tspan class="tb">oo_Supplier</tspan></text>
+    <text x="470" y="252"><tspan class="kw">WHERE</tspan> <tspan class="tb">pk</tspan> <tspan class="kw">IN</tspan> (</text>
+    <text x="490" y="272"><tspan class="cm">-- hop3 suppliedBy(fwd)</tspan></text>
+    <text x="490" y="292"><tspan class="kw">SELECT DISTINCT</tspan> <tspan class="tb">e.b_pk</tspan> <tspan class="kw">AS</tspan> pk <tspan class="kw">FROM</tspan> <tspan class="tb">ol_edge</tspan> e</text>
+    <text x="490" y="312"><tspan class="kw">WHERE</tspan> e.link = <tspan class="pm">$4</tspan> <tspan class="kw">AND</tspan> e.a_pk <tspan class="kw">IN</tspan> (</text>
+    <text x="510" y="332"><tspan class="cm">-- hop2 contains(fwd)</tspan></text>
+    <text x="510" y="352"><tspan class="kw">SELECT DISTINCT</tspan> <tspan class="tb">e.b_pk</tspan> <tspan class="kw">AS</tspan> pk <tspan class="kw">FROM</tspan> <tspan class="tb">ol_edge</tspan> e</text>
+    <text x="510" y="372"><tspan class="kw">WHERE</tspan> e.link = <tspan class="pm">$3</tspan> <tspan class="kw">AND</tspan> e.a_pk <tspan class="kw">IN</tspan> (</text>
+    <text x="530" y="392"><tspan class="cm">-- hop1 places(fwd)</tspan></text>
+    <text x="530" y="412"><tspan class="kw">SELECT DISTINCT</tspan> <tspan class="tb">e.b_pk</tspan> <tspan class="kw">AS</tspan> pk <tspan class="kw">FROM</tspan> <tspan class="tb">ol_edge</tspan> e</text>
+    <text x="530" y="432"><tspan class="kw">WHERE</tspan> e.link = <tspan class="pm">$2</tspan> <tspan class="kw">AND</tspan> e.a_pk <tspan class="kw">IN</tspan> (</text>
+    <text x="550" y="452"><tspan class="cm">-- Base + Filter（终端表谓词）</tspan></text>
+    <text x="550" y="472"><tspan class="kw">SELECT</tspan> <tspan class="tb">o.pk</tspan> <tspan class="kw">FROM</tspan> <tspan class="tb">oo_Customer</tspan> o</text>
+    <text x="550" y="492"><tspan class="kw">WHERE</tspan> o.pk <tspan class="kw">IN</tspan> (<tspan class="kw">SELECT</tspan> pk <tspan class="kw">FROM</tspan> oo_Customer)</text>
+    <text x="570" y="512"><tspan class="kw">AND</tspan> (o.props <tspan class="kw">-&gt;&gt;</tspan> <tspan class="lit">'region'</tspan> = <tspan class="pm">$1</tspan>)</text>
+    <text x="530" y="532">) ) ) );</text>
+    <text x="470" y="560"><tspan class="cm">-- 绑定 $1='华东' $2='places' $3='contains' $4='suppliedBy'</tspan></text>
+    <text x="470" y="592"><tspan class="cm">-- Reverse 跳：a_pk⇄b_pk；∪∩− = UNION/INTERSECT/EXCEPT</tspan></text>
+  </g>
+
+  <!-- operator legend -->
+  <rect x="40" y="640" width="1120" height="120" rx="12" fill="#0e1526" stroke="#243049"/>
+  <text x="58" y="666" class="m k" font-size="12">对象集代数算子（cmx-onto-model / objectset.rs）</text>
+  <g font-size="12">
+    <text x="58" y="694" class="mono"><tspan fill="#67e8f9" class="k">Base</tspan> <tspan class="m">某类型全体</tspan></text>
+    <text x="230" y="694" class="mono"><tspan fill="#fbbf24" class="k">Static</tspan> <tspan class="m">显式 PK 集（VALUES）</tspan></text>
+    <text x="470" y="694" class="mono"><tspan fill="#fbbf24" class="k">Filter</tspan> <tspan class="m">谓词 Eq/Ne/Gt../In/Contains/IsNull/And/Or/Not</tspan></text>
+    <text x="58" y="722" class="mono"><tspan fill="#4ade80" class="k">SearchAround</tspan> <tspan class="m">沿关系遍历（fwd/rev）</tspan></text>
+    <text x="360" y="722" class="mono"><tspan fill="#c4b5fd" class="k">Union ∪ · Intersect ∩ · Subtract −</tspan> <tspan class="m">集合运算（两侧同类型）</tspan></text>
+    <text x="58" y="748" class="m" font-size="11.5">聚合：Count / GroupCount / GroupSum 在 pk 集合外再包一层 —— 与代数正交。全程 <tspan class="pm mono">$n</tspan> 参数化绑定，杜绝注入；数值比较 <tspan class="mono">::text::numeric</tspan> 兜底。</text>
+  </g>
+</svg>

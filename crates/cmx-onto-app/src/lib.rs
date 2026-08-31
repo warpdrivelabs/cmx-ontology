@@ -11,6 +11,11 @@ pub mod auth;
 pub mod dashboard;
 pub mod engine;
 pub mod handlers;
+pub mod action_handlers;
+pub mod function_handlers;
+pub mod policy_handlers;
+pub mod funnel_handlers;
+pub mod events;
 pub mod object_engine;
 pub mod object_handlers;
 pub mod openapi;
@@ -22,7 +27,8 @@ pub mod tenant;
 pub use auth::auth as auth_middleware;
 pub use engine::{warm_store, ONTO_DB_ID};
 pub use object_engine::warm_object_store;
-pub use openapi::openapi_json;
+pub use openapi::{openapi_json, swagger_ui};
+pub use events::events as sse_events;
 pub use resp::{ApiResp, OntoError, Result};
 pub use tenant::{current_tenant, current_user, identity_snapshot};
 
@@ -122,6 +128,10 @@ where
             axum::routing::delete(object_handlers::delete_object),
         )
         .route(
+            "/objects/{object_type}/{pk}/modify",
+            post(object_handlers::modify_object),
+        )
+        .route(
             "/objects/{object_type}/{pk}/links/{link}",
             get(object_handlers::search_around),
         )
@@ -135,6 +145,52 @@ where
         .route(
             "/object-sets/aggregate",
             post(object_handlers::aggregate_object_set),
+        )
+        // —— O4 动作引擎：执行 / 试算 / 审计 ——
+        .route(
+            "/action-types/{api_name}/execute",
+            post(action_handlers::execute_action),
+        )
+        .route(
+            "/action-types/{api_name}/dry-run",
+            post(action_handlers::dry_run_action),
+        )
+        .route("/action-logs", get(action_handlers::list_action_logs))
+        .route("/action-outbox", get(action_handlers::list_action_outbox))
+        .route("/action-outbox/dispatch", post(action_handlers::dispatch_outbox))
+        .route(
+            "/action-outbox/{id}/dispatched",
+            post(action_handlers::mark_outbox_dispatched),
+        )
+        // —— O5 函数计算引擎：求值 ——
+        .route(
+            "/functions/{api_name}/evaluate",
+            post(function_handlers::evaluate_fn),
+        )
+        // —— O6 动态安全：策略 CRUD + 带安全的对象集加载 ——
+        .route(
+            "/policies",
+            get(policy_handlers::list_policies).post(policy_handlers::upsert_policy),
+        )
+        .route(
+            "/policies/{api_name}",
+            axum::routing::delete(policy_handlers::delete_policy),
+        )
+        .route("/secure/object-sets/load", post(policy_handlers::secure_load))
+        // —— O3 数据集成：源映射 CRUD + 全量同步 + 隔离区 + 管道状态 ——
+        .route(
+            "/funnel/mappings",
+            get(funnel_handlers::list_mappings).post(funnel_handlers::upsert_mapping),
+        )
+        .route(
+            "/funnel/mappings/{object_type}",
+            axum::routing::delete(funnel_handlers::delete_mapping),
+        )
+        .route("/funnel/sync/{object_type}", post(funnel_handlers::run_sync))
+        .route("/funnel/quarantine", get(funnel_handlers::list_quarantine))
+        .route(
+            "/funnel/pipeline-status/{object_type}",
+            get(funnel_handlers::pipeline_status),
         )
         // —— 建模台 / 监控数据源 ——
         .route("/stats", get(stats::stats))

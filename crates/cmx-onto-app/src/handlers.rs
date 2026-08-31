@@ -303,6 +303,8 @@ pub async fn publish(Json(req): Json<PublishReq>) -> Result<Json<ApiResp<Value>>
         .publish(&tenant, &req.summary, current_display_user())
         .await
         .map_err(|e| OntoError::internal_error(format!("发布失败: {e}")))?;
+    // O7 实时：广播发布事件（订阅者经 /events SSE 感知）。
+    crate::events::emit(&tenant, "published", json!(meta));
     Ok(Json(ApiResp::ok(json!(meta))))
 }
 

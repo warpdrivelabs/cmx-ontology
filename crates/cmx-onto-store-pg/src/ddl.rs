@@ -99,4 +99,70 @@ pub const DDL_STATEMENTS: &[&str] = &[
         published_at    TIMESTAMPTZ  NOT NULL
     )"#,
     "CREATE INDEX IF NOT EXISTS idx_om_version_published ON om_version (published_at)",
+    // —— O4 动作执行审计（每次动作执行落一行；含参数/编辑/结果/dry-run）——
+    r#"CREATE TABLE IF NOT EXISTS oe_action_log (
+        id              BIGSERIAL    PRIMARY KEY,
+        action          VARCHAR(128) NOT NULL,
+        params          JSONB        NOT NULL DEFAULT '{}',
+        edits           JSONB        NOT NULL DEFAULT '[]',
+        edit_count      INTEGER      NOT NULL DEFAULT 0,
+        dry_run         BOOLEAN      NOT NULL DEFAULT FALSE,
+        status          VARCHAR(16)  NOT NULL,
+        error           TEXT,
+        actor           VARCHAR(128),
+        executed_at     TIMESTAMPTZ  NOT NULL
+    )"#,
+    "CREATE INDEX IF NOT EXISTS idx_oe_action_log_action ON oe_action_log (action, executed_at)",
+    // —— O4-M3 副作用事务性 Outbox（与编辑同事务写入；下游 dispatcher 抽取投递）——
+    r#"CREATE TABLE IF NOT EXISTS oe_outbox (
+        id              BIGSERIAL    PRIMARY KEY,
+        action          VARCHAR(128) NOT NULL,
+        log_id          BIGINT,
+        kind            VARCHAR(32)  NOT NULL,
+        target          VARCHAR(512) NOT NULL,
+        payload         JSONB        NOT NULL DEFAULT '{}',
+        status          VARCHAR(16)  NOT NULL DEFAULT 'pending',
+        attempts        INTEGER      NOT NULL DEFAULT 0,
+        last_error      TEXT,
+        created_at      TIMESTAMPTZ  NOT NULL,
+        dispatched_at   TIMESTAMPTZ
+    )"#,
+    "CREATE INDEX IF NOT EXISTS idx_oe_outbox_pending ON oe_outbox (status, id)",
+    // —— O6 动态安全策略（行级残差 + 列级 marking 授予；按 subject 匹配）——
+    r#"CREATE TABLE IF NOT EXISTS om_policy (
+        api_name        VARCHAR(128) PRIMARY KEY,
+        display_name    VARCHAR(200) NOT NULL DEFAULT '',
+        object_type     VARCHAR(128),
+        subject_kind    VARCHAR(16)  NOT NULL DEFAULT 'role',
+        subject         VARCHAR(128) NOT NULL,
+        row_filter      JSONB        NOT NULL DEFAULT '[]',
+        deny_markings   JSONB        NOT NULL DEFAULT '[]',
+        deny_actions    JSONB        NOT NULL DEFAULT '[]',
+        status          VARCHAR(16)  NOT NULL DEFAULT 'active',
+        created_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
+    )"#,
+    "CREATE INDEX IF NOT EXISTS idx_om_policy_match ON om_policy (object_type, subject_kind, subject)",
+    "ALTER TABLE om_policy ADD COLUMN IF NOT EXISTS deny_actions JSONB NOT NULL DEFAULT '[]'",
+    // —— O3 数据集成：源→对象映射（持久化，可复跑同步）——
+    r#"CREATE TABLE IF NOT EXISTS om_source_mapping (
+        object_type     VARCHAR(128) PRIMARY KEY,
+        source_query    TEXT         NOT NULL,
+        key_columns     JSONB        NOT NULL DEFAULT '[]',
+        title_column    VARCHAR(128),
+        property_map    JSONB        NOT NULL DEFAULT '[]',
+        required        JSONB        NOT NULL DEFAULT '[]',
+        last_sync_at    TIMESTAMPTZ,
+        last_report     JSONB,
+        created_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
+    )"#,
+    // —— O3 隔离区：Funnel 校验不通过的源行（不污染主对象库）——
+    r#"CREATE TABLE IF NOT EXISTS oo_quarantine (
+        id              BIGSERIAL    PRIMARY KEY,
+        object_type     VARCHAR(128) NOT NULL,
+        raw             JSONB        NOT NULL,
+        violations      JSONB        NOT NULL,
+        source          VARCHAR(64)  NOT NULL DEFAULT 'funnel',
+        created_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
+    )"#,
+    "CREATE INDEX IF NOT EXISTS idx_oo_quarantine_type ON oo_quarantine (object_type, id)",
 ];

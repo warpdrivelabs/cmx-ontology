@@ -55,6 +55,93 @@ impl PgObjectStore {
             .map_err(|e| StoreError::Backend(format!("查询失败: {e}")))
     }
 
+    /// O2 乐观锁修改：读改写，条件 `updated_at == expected`。
+    ///
+    /// 返回 `(status, updated_at, props)`：status ∈ ok/conflict/notFound。expected 为 None 时不校验版本
+    /// （盲写）。冲突时回带当前 updated_at + props 供前端刷新（对齐 flow 协同 M1 乐观锁范式）。
+    pub async fn modify_with_optlock(
+        &self,
+        object_type: &str,
+        pk: &str,
+        set: &Value,
+        expected_updated_at: Option<&str>,
+    ) -> StoreResult<(String, Option<String>, Option<Value>)> {
+        let t = object_table(object_type)?;
+        // 读当前
+        let ds = self
+            .query(
+                &format!("SELECT props, updated_at FROM {t} WHERE pk = $1"),
+                vec![DataValue::String(pk.to_string())],
+                "oo_optlock_read",
+            )
+            .await?;
+        let schema = ds.schema.as_ref();
+        let mut cur_props: Option<serde_json::Map<String, Value>> = None;
+        let mut cur_uat: Option<String> = None;
+        for r in ds.iter() {
+            let raw = row_text(r, schema, "props");
+            let v: Value = serde_json::from_str(&raw).unwrap_or(Value::Object(serde_json::Map::new()));
+            cur_props = Some(match v {
+                Value::Object(m) => m,
+                _ => serde_json::Map::new(),
+            });
+            cur_uat = Some(row_text(r, schema, "updated_at"));
+        }
+        let Some(mut props) = cur_props else {
+            return Ok(("notFound".into(), None, None));
+        };
+        // 版本校验
+        if let Some(exp) = expected_updated_at {
+            if cur_uat.as_deref() != Some(exp) {
+                return Ok(("conflict".into(), cur_uat, Some(Value::Object(props))));
+            }
+        }
+        // 合并 set
+        if let Some(patch) = set.as_object() {
+            for (k, v) in patch {
+                props.insert(k.clone(), v.clone());
+            }
+        }
+        let merged = Value::Object(props);
+        // 条件写回（WHERE updated_at = expected，防并发；expected 为空则无条件）
+        // 截到微秒：PG timestamptz 精度微秒，避免 Rust 纳秒值报回后与 DB 存值 rfc3339 不一致（假冲突）。
+        let now = {
+            use chrono::SubsecRound;
+            chrono::Utc::now().trunc_subsecs(6)
+        };
+        let (sql, params) = match expected_updated_at {
+            Some(exp) => {
+                // timestamptz 参数须绑 DateTime（不能绑 String）；解析回时刻。
+                let exp_dt = chrono::DateTime::parse_from_rfc3339(exp)
+                    .map(|d| d.with_timezone(&chrono::Utc))
+                    .map_err(|e| StoreError::Backend(format!("expectedUpdatedAt 非法时刻: {e}")))?;
+                (
+                    format!("UPDATE {t} SET props = $1, updated_at = $2 WHERE pk = $3 AND updated_at = $4"),
+                    vec![
+                        DataValue::Json(merged.to_string()),
+                        DataValue::DateTime(now),
+                        DataValue::String(pk.to_string()),
+                        DataValue::DateTime(exp_dt),
+                    ],
+                )
+            }
+            None => (
+                format!("UPDATE {t} SET props = $1, updated_at = $2 WHERE pk = $3"),
+                vec![
+                    DataValue::Json(merged.to_string()),
+                    DataValue::DateTime(now),
+                    DataValue::String(pk.to_string()),
+                ],
+            ),
+        };
+        let n = self.exec(&sql, params).await?;
+        if n == 0 {
+            // 竞态：expected 匹配读时但写时被他人改 → 冲突
+            return Ok(("conflict".into(), cur_uat, Some(merged)));
+        }
+        Ok(("ok".into(), Some(now.to_rfc3339()), Some(merged)))
+    }
+
     /// [调试] dump 某关系的边（link, a_pk, b_pk）。
     pub async fn dump_edges(&self, link: &str, limit: i64) -> StoreResult<Vec<(String, String, String)>> {
         let ds = self
@@ -378,6 +465,20 @@ fn collect_links(set: &ObjectSet, out: &mut Vec<String>) {
 
 fn get_text(row: &Row, schema: &Schema, col: &str) -> String {
     get_opt_text(row, schema, col).unwrap_or_default()
+}
+
+/// 取列文本（O4 执行器复用）：覆盖字符串/jsonb/整数/布尔/时间等常见列类型。
+pub(crate) fn row_text(row: &Row, schema: &Schema, col: &str) -> String {
+    match row.get_by_name(schema, col) {
+        Some(DataValue::String(s)) => s.clone(),
+        Some(DataValue::ShortStr(s)) | Some(DataValue::LongStr(s)) => s.to_string(),
+        Some(DataValue::Json(s)) => s.clone(),
+        Some(DataValue::Int(n)) => n.to_string(),
+        Some(DataValue::Bool(b)) => b.to_string(),
+        Some(DataValue::DateTime(t)) => t.to_rfc3339(),
+        Some(other) => format!("{other:?}"),
+        None => String::new(),
+    }
 }
 
 fn get_opt_text(row: &Row, schema: &Schema, col: &str) -> Option<String> {
