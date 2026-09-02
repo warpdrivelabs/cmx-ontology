@@ -12,6 +12,7 @@ pub mod dashboard;
 pub mod engine;
 pub mod handlers;
 pub mod action_handlers;
+pub mod action_templates;
 pub mod function_handlers;
 pub mod policy_handlers;
 pub mod funnel_handlers;
@@ -162,6 +163,8 @@ where
         .route("/action-outbox", get(action_handlers::list_action_outbox))
         .route("/action-outbox/config", get(action_handlers::outbox_config))
         .route("/flow/definitions", get(action_handlers::flow_definitions))
+        .route("/report/definitions", get(action_handlers::report_definitions))
+        .route("/action-templates", get(action_handlers::action_templates))
         .route("/action-outbox/dispatch", post(action_handlers::dispatch_outbox))
         .route(
             "/action-outbox/{id}/dispatched",

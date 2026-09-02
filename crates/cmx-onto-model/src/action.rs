@@ -163,6 +163,7 @@ pub struct SideEffect {
 fn side_effect_target_key(kind: &str) -> &'static str {
     match kind {
         "startBusinessProcess" => "flowDefKey",
+        "computeReport" => "reportCode",
         "callFunction" => "function",
         "webhook" => "url",
         "emitEvent" => "topic",

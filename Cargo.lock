@@ -879,12 +879,31 @@ dependencies = [
  "cmx-core",
  "cmx-database-pg",
  "cmx-registry-config",
+ "cmx-service-rpc",
  "cmx-utils",
  "local-ip-address",
  "serde",
  "thiserror 2.0.20",
  "tokio",
  "toml 0.8.23",
+ "tracing",
+]
+
+[[package]]
+name = "cmx-service-rpc"
+version = "0.1.12"
+dependencies = [
+ "async-trait",
+ "cmx-core",
+ "cmx-registry-config",
+ "cmx-traits",
+ "cmx-utils",
+ "rand 0.8.8",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
  "tracing",
 ]
 
@@ -3842,6 +3861,7 @@ dependencies = [
  "hyper-util",
  "js-sys",
  "log",
+ "mime_guess",
  "percent-encoding",
  "pin-project-lite",
  "quinn",

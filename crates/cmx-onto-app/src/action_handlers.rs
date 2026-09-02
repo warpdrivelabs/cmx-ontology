@@ -197,6 +197,51 @@ pub async fn flow_definitions() -> Result<Json<ApiResp<Value>>> {
     }
 }
 
+/// GET /report/definitions —— 代理 cmx-report 报表列表（设计台「生成报表」副作用选择器用）。
+/// 容错：report 不可达返回空列表 + error（前端降级为自由输入 reportCode）。
+pub async fn report_definitions() -> Result<Json<ApiResp<Value>>> {
+    let tenant = current_tenant();
+    match crate::outbound::list_reports(&tenant).await {
+        Ok(data) => {
+            // report 列表形如 {dbId, items:[..]}；兼容 reports/裸数组。item 字段 code/name。
+            let arr = data
+                .get("items")
+                .and_then(|d| d.as_array())
+                .or_else(|| data.get("reports").and_then(|d| d.as_array()))
+                .or_else(|| data.as_array());
+            let list: Vec<Value> = arr
+                .map(|a| {
+                    a.iter()
+                        .map(|d| {
+                            let code = d
+                                .get("code")
+                                .or_else(|| d.get("reportCode"))
+                                .or_else(|| d.get("report_code"))
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("");
+                            let name = d
+                                .get("name")
+                                .or_else(|| d.get("reportName"))
+                                .or_else(|| d.get("report_name"))
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("");
+                            json!({ "code": code, "name": name })
+                        })
+                        .filter(|d| !d["code"].as_str().unwrap_or("").is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(Json(ApiResp::ok(json!({ "reports": list }))))
+        }
+        Err(e) => Ok(Json(ApiResp::ok(json!({ "reports": [], "error": e })))),
+    }
+}
+
+/// GET /action-templates —— 内置动作模板清单（前端「从模板新建动作」用；关账联动等预置组合）。
+pub async fn action_templates() -> Result<Json<ApiResp<Value>>> {
+    Ok(Json(ApiResp::ok(json!({ "templates": crate::action_templates::templates() }))))
+}
+
 /// 派发参数：?limit=
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
@@ -271,6 +316,15 @@ async fn dispatch_one(tenant: &str, kind: &str, target: &str, payload: &Value) -
             }
             let iid = crate::outbound::start_business_process(tenant, target, payload).await?;
             tracing::info!(target = %target, instance = %iid, "startBusinessProcess 已投递");
+            Ok(true)
+        }
+        // 触发报表计算 → 调 cmx-report compute（真算落 cr_cell_data）。
+        "computeReport" => {
+            if !crate::outbound::outbound_enabled() {
+                return Ok(false);
+            }
+            crate::outbound::compute_report(tenant, target, payload).await?;
+            tracing::info!(report = %target, "computeReport 已投递");
             Ok(true)
         }
         other => Err(format!("未知副作用类型 {other}")),

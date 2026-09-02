@@ -2,7 +2,7 @@
 
 - **日期**：2026-08-31
 - **被测服务**：`cmx-onto-server` @ `127.0.0.1:8097`（独立微服务壳，一芯多壳）
-- **联调对端**：`cmx-flow-server` @ `127.0.0.1:8091`（jwt 模式 + 服务 API Key，DB 同 `cmx_fico`）；onto 以 `ONTO_FLOW_API_KEY` 注入服务身份调用
+- **联调对端**：`cmx-flow-server` @ `127.0.0.1:8091` + `cmx-rpt-server` @ `127.0.0.1:8092`（均 jwt 模式 + 服务 API Key，DB 同 `cmx_fico`）；onto 以 `ONTO_FLOW_API_KEY` / `ONTO_REPORT_API_KEY` 注入服务身份调用
 - **数据库**：`cmx_fico` @ `192.168.157.46:5432`（团队开发库，`om_*`/`oo_*`/`ol_*`/`oe_*` + flow `cmx_flow_*` 共库）
 - **认证**：`mode=off`，`tenancy=single`，`X-API-Key → tenant=default`
 - **前端**：Playwright 无头 Chromium（node v25.2.1，`NODE_PATH=/Users/nanomesh/node_modules`），门户 `@8080/portal`
@@ -16,9 +16,9 @@
 | 层次 | 套件数 | 断言/用例数 | 结果 |
 |---|---:|---:|:--:|
 | 单元测试（Rust `cargo test`） | 3 crate | **54** | ✅ 54/54 |
-| 后端功能测试（E2E, curl+docker psql） | 13 | **139** | ✅ 139/139 |
-| 前端功能测试（CDP, Playwright） | 12 | **119** | ✅ 119/119 |
-| **合计** | **28** | **312** | ✅ **312/312** |
+| 后端功能测试（E2E, curl+docker psql） | 15 | **158** | ✅ 158/158 |
+| 前端功能测试（CDP, Playwright） | 14 | **139** | ✅ 139/139 |
+| **合计** | **32** | **351** | ✅ **351/351** |
 
 ---
 
@@ -52,7 +52,9 @@
 | 11 | `o4m3_dispatcher` | 9 | **O4-M3 dispatcher**：`emitEvent`→SSE、`callFunction`→O5、`webhook` 外部 host 被 SSRF 白名单拦→`failed` |
 | 12 | `o4m3_dispatch_delivery` | 18 | **dispatcher 真投递**：`webhook` 真发 HTTP + `startBusinessProcess` 调 flow v1 `/api/flow/v1/instances`（本地 sink 捕获真出站，断言 `definitionKey` 插值/`X-Tenant`/payload/终态/幂等） |
 | 13 | `o4m3_flow_integration` | 12 | **onto↔flowengine 跨服务真联调**：onto 动作 `startBusinessProcess` → dispatcher 经 `X-API-Key` 调**真实 flow-server**（jwt 模式）→ flowengine **真建流程实例**；按唯一 `businessKey` 定位实例，断言 `definitionKey`/`variables.orderId`（onto 透传）/停在 `approve` 节点 |
-| — | **合计** | **139** | — |
+| 14 | `o4m3_report_integration` | 9 | **onto↔cmx-report 跨服务真联调**：onto 动作 `computeReport` → dispatcher 经 `X-API-Key` 调**真实 rpt-server** compute → cmx-report **真算落 `cr_cell_data`**；seed 常量公式单元格（`1+1`），断言 onto 触发的计算写入 `A1=2`（含读连通：`/report/definitions` 代理列 213 张报表） |
+| 15 | `o4m3_template_consol_close` | 10 | **关账联动模板（flow+report 双联动）**：从内置模板 `consolClose` 实例化一个动作 → **一个动作同时**起关账审批流（flowengine `consol_close`）+ 算关账报表（cmx-report）；断言实例化含两副作用、执行 `effects=2`、flowengine 建 `consol_close` 实例 + `cr_cell_data A1=2` |
+| — | **合计** | **158** | — |
 
 ---
 
@@ -72,7 +74,9 @@
 | 10 | `onto_portal_menu` | 7 | **门户菜单**：onto 三工作台（designer/explorer/workshop）入口真机可达 |
 | 11 | `onto_flow_sideeffect` | 13 | **动作「起流程」副作用可视化配置**：设计台动作 Inspector 富配置块（flowDefKey 选择器 + businessKey + 参数→变量映射）；选择器由 onto `/flow/definitions` 代理填充（12 个已发布流程）；编辑保存 → API 校验落库 `sideEffects` 正确（无 `_vars` 泄漏）；kind 下拉切换出富块 |
 | 12 | `onto_sideeffect_webhook_notif` | 13 | **动作「Webhook / 通知」副作用可视化配置**：富块——Webhook（URL + 请求体字段映射）、通知（模板 + 通知数据字段）渲染/回填；编辑加字段 → 保存 → API 校验落库 `sideEffects`（内联键正确、无 `_vars` 泄漏）；新增副作用即富块、kind 切换 |
-| — | **合计** | **119** | — |
+| 13 | `onto_sideeffect_report` | 12 | **动作「生成报表」副作用可视化配置**：富块——reportCode 选择器（onto `/report/definitions` 代理填充 213 张报表）+ 报表参数映射（orgCode/periodCode/version）渲染/回填；编辑加参数 → 保存 → API 校验落库；kind 切换出富块 |
+| 14 | `onto_action_template` | 8 | **从模板新建动作**：设计台「+ 从模板」→ 选内置 `consolClose`（关账联动）+ 填 apiName → 建动作 → 编辑器自动呈现两条副作用富块（`consol_close` + `STAT_01_D`）；API 校验含 startBusinessProcess + computeReport |
+| — | **合计** | **139** | — |
 
 > 全部 `rc=0`，无 `FAIL`，无浏览器 `console.error`。
 
@@ -96,6 +100,8 @@
 | P2 | OSDK + Workshop 客户360 | `p2_osdk` `onto_workshop` |
 | — | dispatcher 真投递（webhook/flow v1） | `o4m3_dispatch_delivery` |
 | — | onto↔flowengine 跨服务真联调（真建实例） | `o4m3_flow_integration` |
+| — | onto↔cmx-report 跨服务真联调（真算落库） | `o4m3_report_integration` |
+| — | 关账联动模板（flow+report 双联动 + 从模板新建） | `o4m3_template_consol_close` · `onto_action_template` |
 | 前端图组件 | 锚点/边路由/线段编辑/非破坏重排/门户接入 | `onto_ui2/ui3/ui4/ui5` `onto_designer` `onto_portal_menu` |
 
 ---
@@ -113,11 +119,12 @@
 
 ## 七、结论
 
-本体平台 **O0–O8 主线 + P0/P1/P2 + dispatcher 真投递 + onto↔flowengine 跨服务联调 + 动作副作用（起流程/Webhook/通知）可视化配置** 全部通过真机验证：
+本体平台 **O0–O8 主线 + P0/P1/P2 + dispatcher 真投递 + onto↔flowengine/cmx-report 跨服务联调 + 动作副作用可视化配置 + 关账联动模板** 全部通过真机验证：
 
-- **单元 54/54 · 后端 139/139 · 前端 119/119 = 312/312，零失败。**
-- **跨服务真联调打通**：onto 动作 `startBusinessProcess` → dispatcher（服务 `X-API-Key`）→ 真实 flowengine 建流程实例（实例 `c5a81213-…` = `ACTIVE`，`businessKey`/变量溯源 onto）。
-- **动作副作用可视化配置**：设计台富配置块统一支持 **起流程**（flowDefKey 选已发布流程 + businessKey + 参数→流程变量）、**Webhook**（URL + 请求体字段映射）、**通知**（模板 + 通知数据字段）；三者共用「参数→载荷」键值映射，存前折成内联键、`_vars` 不外泄。UI 配置的动作执行闭环：纯起流程 → 真建实例 `e1812551-…`；Webhook → sink 捕获 `POST /hook/paid`（`amount`/`orderId` 插值）。附带放宽执行门：仅副作用（无 edit）的动作亦可执行；新增 onto `GET /flow/definitions` 代理（容错降级）。
+- **单元 54/54 · 后端 158/158 · 前端 139/139 = 351/351，零失败。**
+- **跨服务真联调打通（双服务）**：onto 动作 `startBusinessProcess` → 真实 flowengine 建流程实例（`c5a81213-…` `ACTIVE`）；onto 动作 `computeReport` → 真实 cmx-report `compute` 真算落 `cr_cell_data`（`A1=2`）。均经服务 `X-API-Key`（portal 同款）+ jwt 模式。
+- **动作副作用可视化配置**：设计台富配置块统一支持 **起流程**（flowDefKey 选已发布流程 + businessKey + 参数→流程变量）、**生成报表**（reportCode 选报表 + 报表参数 orgCode/periodCode/version）、**Webhook**（URL + 请求体字段映射）、**通知**（模板 + 通知数据字段）；四者共用「参数→载荷」键值映射，存前折成内联键、`_vars` 不外泄。选择器分别由 onto `GET /flow/definitions`、`GET /report/definitions` 代理填充（容错降级）。
+- **关账联动模板**：内置动作模板注册表（`GET /action-templates`）+ 设计台「从模板新建动作」；旗舰模板 `consolClose` 一个动作串起 **起关账流（flowengine `consol_close`）+ 算关账报表（cmx-report）**——真机验证 UI 从模板建的动作执行后**同时**建流程实例 + 真算落库。附带放宽执行门：仅副作用（无 edit）的动作亦可执行。
 - 测试用临时配置（dispatcher sink `:8770`）已回滚；当前留存 onto(:8097, 已配 `ONTO_FLOW_API_KEY`) + flow(:8091) 双服务在线，供继续联调。
 - 全部代码/前端**未提交**（按约定）。
 

@@ -13,6 +13,7 @@ use std::time::Duration;
 
 const DEFAULT_FLOW_BASE: &str = "http://127.0.0.1:8091";
 const FLOW_INSTANCES_PATH: &str = "/api/flow/v1/instances";
+const DEFAULT_REPORT_BASE: &str = "http://127.0.0.1:8092";
 
 /// 进程级共享 HTTP 客户端（连接复用 + 统一超时，避免慢下游拖垮 dispatcher）。
 fn client() -> &'static reqwest::Client {
@@ -83,8 +84,23 @@ pub fn config_snapshot() -> Value {
         "flowUrl": flow_base(),
         "flowInstancesPath": FLOW_INSTANCES_PATH,
         "flowApiKeySet": flow_api_key().is_some(),
+        "reportUrl": report_base(),
+        "reportApiKeySet": report_api_key().is_some(),
         "webhookAllow": webhook_allow(),
     })
+}
+
+/// 报表平台基址（去尾斜杠；默认 `http://127.0.0.1:8092`）。
+pub fn report_base() -> String {
+    cfg("ONTO_REPORT_URL", "onto.report_url", DEFAULT_REPORT_BASE)
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// 调 cmx-report 的服务间 API Key（`ONTO_REPORT_API_KEY` / `onto.report_api_key`）。
+pub fn report_api_key() -> Option<String> {
+    let v = cfg("ONTO_REPORT_API_KEY", "onto.report_api_key", "");
+    if v.is_empty() { None } else { Some(v) }
 }
 
 /// host 是否在白名单（`*` 放行一切；否则 host 精确匹配，忽略大小写）。
@@ -189,6 +205,56 @@ pub async fn list_flow_definitions(tenant: &str) -> Result<Value, String> {
     let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
         return Err(format!("列流程定义非 2xx（{status}）"));
+    }
+    let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    Ok(v.get("data").cloned().unwrap_or(v))
+}
+
+/// 触发报表计算：POST `{report_base}/api/report-design/reports/{code}/compute`（body 透传 payload，
+/// cmx-report 读 `orgCode`/`periodCode`/`version?` 真算落 cr_cell_data）。返回 compute 结果 data。
+pub async fn compute_report(tenant: &str, code: &str, payload: &Value) -> Result<Value, String> {
+    let url = format!("{}/api/report-design/reports/{}/compute", report_base(), code);
+    let mut rb = client()
+        .post(&url)
+        .header("X-Tenant", tenant)
+        .header("X-Onto-Source", "cmx-ontology");
+    if let Some(key) = report_api_key() {
+        rb = rb.header("X-API-Key", key);
+    }
+    let resp = rb.json(payload).send().await.map_err(|e| format!("生成报表请求失败（{url}）: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!(
+            "生成报表非 2xx（{status}）: {}",
+            text.chars().take(200).collect::<String>()
+        ));
+    }
+    let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    if let Some(c) = v.get("code").and_then(|c| c.as_i64()) {
+        if c != 0 {
+            let msg = v.get("msg").and_then(|m| m.as_str()).unwrap_or("");
+            return Err(format!("生成报表返回 code={c} {msg}"));
+        }
+    }
+    Ok(v.get("data").cloned().unwrap_or(v))
+}
+
+/// 列 cmx-report 报表（设计台「生成报表」副作用的可视化选择器数据源）。
+pub async fn list_reports(tenant: &str) -> Result<Value, String> {
+    let url = format!("{}/api/report-design/reports", report_base());
+    let mut rb = client()
+        .get(&url)
+        .header("X-Tenant", tenant)
+        .header("X-Onto-Source", "cmx-ontology");
+    if let Some(key) = report_api_key() {
+        rb = rb.header("X-API-Key", key);
+    }
+    let resp = rb.send().await.map_err(|e| format!("列报表失败（{url}）: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!("列报表非 2xx（{status}）"));
     }
     let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
     Ok(v.get("data").cloned().unwrap_or(v))
