@@ -200,13 +200,13 @@ impl OntologyStore for PgOntologyStore {
         self.exec(
             "INSERT INTO om_object_type \
              (api_name, display_name, description, icon, color, primary_key, title_property, status, \
-              properties, implements, datasource, cmx_origin, version, created_at, updated_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14) \
+              properties, implements, dam, doc_type, datasource, cmx_origin, version, created_at, updated_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$16) \
              ON CONFLICT (api_name) DO UPDATE SET display_name=EXCLUDED.display_name, \
               description=EXCLUDED.description, icon=EXCLUDED.icon, color=EXCLUDED.color, \
               primary_key=EXCLUDED.primary_key, title_property=EXCLUDED.title_property, \
               status=EXCLUDED.status, properties=EXCLUDED.properties, implements=EXCLUDED.implements, \
-              datasource=EXCLUDED.datasource, cmx_origin=EXCLUDED.cmx_origin, version=EXCLUDED.version, \
+              dam=EXCLUDED.dam, doc_type=EXCLUDED.doc_type, datasource=EXCLUDED.datasource, cmx_origin=EXCLUDED.cmx_origin, version=EXCLUDED.version, \
               updated_at=EXCLUDED.updated_at",
             vec![
                 DataValue::String(def.api_name.clone()),
@@ -219,6 +219,8 @@ impl OntologyStore for PgOntologyStore {
                 DataValue::String(enum_to_str(&def.status)),
                 json_arr(&def.properties),
                 json_arr(&def.implements),
+                DataValue::Json(serde_json::to_string(&def.dam).unwrap_or_else(|_| "{}".to_string())),
+                DataValue::Json(serde_json::to_string(&def.doc_type).unwrap_or_else(|_| "{}".to_string())),
                 opt_json(&def.datasource),
                 opt_json(&def.cmx_origin),
                 DataValue::Int(def.version as i64),
@@ -237,7 +239,7 @@ impl OntologyStore for PgOntologyStore {
         let ds = self
             .query(
                 "SELECT api_name, display_name, description, icon, color, primary_key, title_property, \
-                 status, properties, implements, datasource, cmx_origin, version \
+                 status, properties, implements, dam, doc_type, datasource, cmx_origin, version \
                  FROM om_object_type WHERE api_name = $1",
                 vec![DataValue::String(api_name.to_string())],
                 "om_object_type_one",
@@ -266,6 +268,8 @@ impl OntologyStore for PgOntologyStore {
             status: parse_status(row, s),
             properties,
             implements,
+            dam: get_opt_json(row, s, "dam").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
+            doc_type: get_opt_json(row, s, "doc_type").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
             datasource: get_opt_json(row, s, "datasource"),
             cmx_origin: get_opt_json(row, s, "cmx_origin"),
             version: get_i64(row, s, "version") as u32,
@@ -276,7 +280,7 @@ impl OntologyStore for PgOntologyStore {
         let ds = self
             .query(
                 "SELECT api_name, display_name, status, primary_key, \
-                 jsonb_array_length(properties) AS pc, version, updated_at \
+                 jsonb_array_length(properties) AS pc, dam, doc_type, version, updated_at \
                  FROM om_object_type ORDER BY updated_at DESC",
                 vec![],
                 "om_object_type_list",
@@ -291,6 +295,8 @@ impl OntologyStore for PgOntologyStore {
                 status: parse_status(row, s),
                 primary_key: get_opt_string(row, s, "primary_key").unwrap_or_default(),
                 property_count: get_i64(row, s, "pc") as u32,
+                dam: get_opt_json(row, s, "dam").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
+                doc_type: get_opt_json(row, s, "doc_type").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
                 version: get_i64(row, s, "version") as u32,
                 updated_at: get_opt_ts(row, s, "updated_at"),
             });

@@ -101,6 +101,9 @@ async function waitFor(page, fn, timeout = 15000) { return page.waitForFunction(
     A('registered', registered, '自定义元素已注册');
 
     // ③ 组件 shadow 内画出对象类型卡片（SVG）
+    // 分域折叠视图(当库中存在 DAM 分类时)默认收起对象卡 → 先展开全部（无分组时无副作用）再断言卡片。
+    await page.evaluate(() => { const el = document.querySelector('#h-content cmx-ontology-graph'); if (el && el.setAllGroups) el.setAllGroups(false); });
+    await page.waitForTimeout(300);
     await waitFor(page, () => {
       const el = document.querySelector('#h-content cmx-ontology-graph');
       return el && el.shadowRoot && el.shadowRoot.querySelectorAll('.og-object').length > 0;

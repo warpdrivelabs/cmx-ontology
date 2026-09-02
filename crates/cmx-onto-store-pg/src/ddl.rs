@@ -143,6 +143,10 @@ pub const DDL_STATEMENTS: &[&str] = &[
     )"#,
     "CREATE INDEX IF NOT EXISTS idx_om_policy_match ON om_policy (object_type, subject_kind, subject)",
     "ALTER TABLE om_policy ADD COLUMN IF NOT EXISTS deny_actions JSONB NOT NULL DEFAULT '[]'",
+    // 对象类型 DAM 三级分类（域/应用/模块）——本体图分域折叠；幂等补列。
+    "ALTER TABLE om_object_type ADD COLUMN IF NOT EXISTS dam JSONB NOT NULL DEFAULT '{}'",
+    // 对象类型 业务单据类型（对象浏览器在模块下再分一层）；幂等补列。
+    "ALTER TABLE om_object_type ADD COLUMN IF NOT EXISTS doc_type JSONB NOT NULL DEFAULT '{}'",
     // —— O3 数据集成：源→对象映射（持久化，可复跑同步）——
     r#"CREATE TABLE IF NOT EXISTS om_source_mapping (
         object_type     VARCHAR(128) PRIMARY KEY,

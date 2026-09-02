@@ -102,6 +102,29 @@ pub struct PropertyTypeDef {
     pub description: String,
 }
 
+/// DAM 三级分类（Domain · Application · Module；复用系统既有分类，驱动本体图分域折叠）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DamRef {
+    #[serde(default)]
+    pub domain: String,
+    #[serde(default)]
+    pub application: String,
+    #[serde(default)]
+    pub module: String,
+}
+
+/// 业务单据类型（Business Document Type；对象类型归属的单据，如"销售订单"；一张单据常含多个对象类型如头/行）。
+/// 由 cmx-model DOC 反向导入回填，或设计器 Inspector 手填；对象浏览器按此在模块下再分一层。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DocTypeRef {
+    #[serde(default)]
+    pub code: String,
+    #[serde(default)]
+    pub name: String,
+}
+
 /// 对象类型定义（真实世界实体的 schema；名词）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -117,6 +140,12 @@ pub struct ObjectTypeDef {
     /// 图谱着色。
     #[serde(default)]
     pub color: String,
+    /// DAM 三级分类（域/应用/模块）——本体图按此分域折叠，缓解大图性能。
+    #[serde(default)]
+    pub dam: DamRef,
+    /// 业务单据类型（对象浏览器在模块下按此再分一层；DOC 导入回填，Inspector 可手填）。
+    #[serde(default)]
+    pub doc_type: DocTypeRef,
     /// 主键属性 apiName。
     #[serde(default)]
     pub primary_key: String,
@@ -415,6 +444,12 @@ pub struct ObjectTypeMeta {
     pub status: TypeStatus,
     pub primary_key: String,
     pub property_count: u32,
+    /// DAM 三级分类（清单富化：前端 explorer 免拉全定义即可按 DAM 分组）。
+    #[serde(default)]
+    pub dam: DamRef,
+    /// 业务单据类型（清单富化：对象浏览器按此在模块下再分一层）。
+    #[serde(default)]
+    pub doc_type: DocTypeRef,
     pub version: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<DateTime<Utc>>,
