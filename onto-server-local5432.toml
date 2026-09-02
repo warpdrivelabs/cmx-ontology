@@ -1,0 +1,21 @@
+[server]
+host = "0.0.0.0"
+port = 8097
+log_dir = "logs"
+log_level = "info"
+graceful_timeout_secs = 10
+
+[[databases]]
+db_id = "onto_pg"
+db_name = "本体平台库(local)"
+db_type = "postgres"
+db_url = "postgres://postgres:postgres@127.0.0.1:5432/fico"
+default = true
+
+[auth]
+mode = "off"
+tenancy = "single"
+
+[assets]
+ui_native_dir = "../cmx-container/assets/onto/web/ui-native"
+ui_html_dir = "../cmx-container/assets/onto/web/ui-html"
