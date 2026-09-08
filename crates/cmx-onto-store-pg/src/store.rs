@@ -10,7 +10,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use cmx_core::model::cell::{DataValue, SqlTypeMarker};
 use cmx_core::model::data::dataset::{DataSet, Row, Schema};
-use cmx_database_pg::{execute_sql, execute_sql_with_params, query_sql_with_params, SqlParams};
+use cmx_database_pg::{
+    execute_sql, execute_sql_with_params, get_default_pg_db_manager, query_sql_with_params,
+    SqlParams,
+};
 use cmx_onto_model::{
     ActionTypeDef, FunctionDef, InterfaceDef, LinkTypeDef, LinkTypeMeta, ObjectTypeDef,
     ObjectTypeMeta, OntologyManifest, OntologyStore, OntologyVersionMeta, PropertyTypeDef,
@@ -52,6 +55,117 @@ impl PgOntologyStore {
         query_sql_with_params(&self.db_id, None, sql, SqlParams::DataValues(params), ds_id)
             .await
             .map_err(|e| StoreError::Backend(format!("查询失败: {e}")))
+    }
+
+    // ─────────────────── B0 乐观锁保存（原子） ───────────────────
+
+    /// 带乐观锁的对象类型 upsert（B0，单语句原子，无 TOCTOU）：
+    /// - `def.version == 0`（新建语义 / 无版本调用方如 quickCreate、import）：盲写 upsert，
+    ///   服务端定版本——新建置 1、覆盖既有行时 `version = 旧 + 1`；
+    /// - `def.version > 0`（designer GET→POST 通路）：条件 UPDATE `WHERE api_name=$1 AND version=$n`，
+    ///   0 行 = 版本不匹配（他人已改，409 Conflict）或行不存在（已被删除，404 NotFound）；
+    ///   命中则 `version = 旧 + 1`。
+    ///
+    /// 返回落库后的新版本号（前端以响应刷新基线）。行为变更声明见方案
+    /// `documents/plans/20260908_cmx-ontology_本体设计器功能补全与交互样式优化方案.md` §3.3 B0。
+    pub async fn upsert_object_type_locked(
+        &self,
+        _tenant: &str,
+        def: &ObjectTypeDef,
+    ) -> StoreResult<u32> {
+        let now = Utc::now();
+        if def.version == 0 {
+            // 盲写路径：INSERT 定版本 1；冲突覆盖时在旧版本上 +1（服务端单一真相，不吃客户端值）。
+            let ds = self
+                .query(
+                    "INSERT INTO om_object_type \
+                     (api_name, display_name, description, icon, color, primary_key, title_property, status, \
+                      properties, implements, dam, doc_type, datasource, cmx_origin, version, created_at, updated_at) \
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,1,$15,$15) \
+                     ON CONFLICT (api_name) DO UPDATE SET display_name=EXCLUDED.display_name, \
+                      description=EXCLUDED.description, icon=EXCLUDED.icon, color=EXCLUDED.color, \
+                      primary_key=EXCLUDED.primary_key, title_property=EXCLUDED.title_property, \
+                      status=EXCLUDED.status, properties=EXCLUDED.properties, implements=EXCLUDED.implements, \
+                      dam=EXCLUDED.dam, doc_type=EXCLUDED.doc_type, datasource=EXCLUDED.datasource, cmx_origin=EXCLUDED.cmx_origin, \
+                      version=om_object_type.version + 1, updated_at=EXCLUDED.updated_at \
+                     RETURNING version",
+                    vec![
+                        DataValue::String(def.api_name.clone()),
+                        DataValue::String(def.display_name.clone()),
+                        DataValue::String(def.description.clone()),
+                        DataValue::String(def.icon.clone()),
+                        DataValue::String(def.color.clone()),
+                        DataValue::String(def.primary_key.clone()),
+                        DataValue::String(def.title_property.clone()),
+                        DataValue::String(enum_to_str(&def.status)),
+                        json_arr(&def.properties),
+                        json_arr(&def.implements),
+                        DataValue::Json(serde_json::to_string(&def.dam).unwrap_or_else(|_| "{}".to_string())),
+                        DataValue::Json(serde_json::to_string(&def.doc_type).unwrap_or_else(|_| "{}".to_string())),
+                        opt_json(&def.datasource),
+                        opt_json(&def.cmx_origin),
+                        DataValue::DateTime(now),
+                    ],
+                    "om_object_type_upsert_v0",
+                )
+                .await?;
+            return ds
+                .iter()
+                .next()
+                .map(|row| get_i64(row, ds.schema.as_ref(), "version") as u32)
+                .ok_or_else(|| StoreError::Backend("upsert 未返回新版本号".into()));
+        }
+        // 条件更新路径：命中即原子递增；0 行区分「版本冲突」与「行不存在」。
+        let ds = self
+            .query(
+                "UPDATE om_object_type SET display_name=$2, description=$3, icon=$4, color=$5, \
+                 primary_key=$6, title_property=$7, status=$8, properties=$9, implements=$10, \
+                 dam=$11, doc_type=$12, datasource=$13, cmx_origin=$14, version=version + 1, updated_at=$15 \
+                 WHERE api_name=$1 AND version=$16 \
+                 RETURNING version",
+                vec![
+                    DataValue::String(def.api_name.clone()),
+                    DataValue::String(def.display_name.clone()),
+                    DataValue::String(def.description.clone()),
+                    DataValue::String(def.icon.clone()),
+                    DataValue::String(def.color.clone()),
+                    DataValue::String(def.primary_key.clone()),
+                    DataValue::String(def.title_property.clone()),
+                    DataValue::String(enum_to_str(&def.status)),
+                    json_arr(&def.properties),
+                    json_arr(&def.implements),
+                    DataValue::Json(serde_json::to_string(&def.dam).unwrap_or_else(|_| "{}".to_string())),
+                    DataValue::Json(serde_json::to_string(&def.doc_type).unwrap_or_else(|_| "{}".to_string())),
+                    opt_json(&def.datasource),
+                    opt_json(&def.cmx_origin),
+                    DataValue::DateTime(now),
+                    DataValue::Int(def.version as i64),
+                ],
+                "om_object_type_update_locked",
+            )
+            .await?;
+        if let Some(row) = ds.iter().next() {
+            return Ok(get_i64(row, ds.schema.as_ref(), "version") as u32);
+        }
+        // 0 行：行不存在 → 404 语义；存在但版本不符 → 409 语义。
+        let exists = self
+            .query(
+                "SELECT 1 AS one FROM om_object_type WHERE api_name = $1",
+                vec![DataValue::String(def.api_name.clone())],
+                "om_object_type_exists",
+            )
+            .await?;
+        if exists.iter().next().is_some() {
+            Err(StoreError::Conflict(format!(
+                "对象类型 {} 已被他人修改（基线版本 {} 已过期），请刷新后重试",
+                def.api_name, def.version
+            )))
+        } else {
+            Err(StoreError::NotFound(format!(
+                "对象类型 {} 不存在（可能已被删除），请刷新",
+                def.api_name
+            )))
+        }
     }
 
     // ─────────────────── 发布 / 版本（inherent 方法） ───────────────────
@@ -456,12 +570,45 @@ impl OntologyStore for PgOntologyStore {
         Ok(simple_metas(&ds))
     }
 
+    /// B1：删接口**同事务**级联清各对象类型的 implements 引用（消灭悬空引用；方案唯一行为级豁免）。
+    /// 版本快照表（om_version）不动。`jsonb - text` 对数组删匹配字符串元素，须显式 `::text` 重载。
     async fn delete_interface(&self, _tenant: &str, api_name: &str) -> StoreResult<u64> {
-        self.exec(
+        let manager = get_default_pg_db_manager();
+        let txn_ctx = manager.get_transaction_context();
+        let txn_id = txn_ctx
+            .begin(&self.db_id)
+            .await
+            .map_err(|e| StoreError::Backend(format!("开启事务失败: {e}")))?;
+        let n = match execute_sql_with_params(
+            &self.db_id,
+            Some(&txn_id),
             "DELETE FROM om_interface WHERE api_name = $1",
-            vec![DataValue::String(api_name.to_string())],
+            SqlParams::DataValues(vec![DataValue::String(api_name.to_string())]),
         )
         .await
+        {
+            Ok(n) => n,
+            Err(e) => {
+                let _ = txn_ctx.rollback(&txn_id).await;
+                return Err(StoreError::Backend(format!("删除接口失败: {e}")));
+            }
+        };
+        if let Err(e) = execute_sql_with_params(
+            &self.db_id,
+            Some(&txn_id),
+            "UPDATE om_object_type SET implements = implements - $1::text WHERE implements ? $1",
+            SqlParams::DataValues(vec![DataValue::String(api_name.to_string())]),
+        )
+        .await
+        {
+            let _ = txn_ctx.rollback(&txn_id).await;
+            return Err(StoreError::Backend(format!("级联清 implements 失败: {e}")));
+        }
+        txn_ctx
+            .commit(&txn_id)
+            .await
+            .map_err(|e| StoreError::Backend(format!("提交事务失败: {e}")))?;
+        Ok(n)
     }
 
     // ─────────────────────── 共享属性类型 ───────────────────────

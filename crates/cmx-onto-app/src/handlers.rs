@@ -10,7 +10,7 @@ use axum::extract::Path;
 use axum::Json;
 use cmx_onto_model::{
     ActionTypeDef, FunctionDef, InterfaceDef, LinkTypeDef, ObjectTypeDef, OntologyStore,
-    SharedPropertyTypeDef,
+    SharedPropertyTypeDef, StoreError,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -39,15 +39,25 @@ pub async fn get_object_type(Path(api_name): Path<String>) -> Result<Json<ApiRes
 }
 
 /// POST /object-types —— upsert 对象类型（结构校验后落库）。
+///
+/// B0 乐观锁：`version > 0` 走原子条件更新（跨标签页/久置缓冲的过期保存得 409）；
+/// `version = 0`（新建 / quickCreate / import）保持既有盲写语义。响应带服务端递增后的
+/// `version`，前端以响应刷新基线。
 pub async fn save_object_type(Json(def): Json<ObjectTypeDef>) -> Result<Json<ApiResp<Value>>> {
     def.validate()
         .map_err(|e| OntoError::business_error(format!("对象类型非法: {e}")))?;
     let tenant = current_tenant();
-    store()
-        .upsert_object_type(&tenant, &def)
+    let version = store()
+        .upsert_object_type_locked(&tenant, &def)
         .await
-        .map_err(|e| OntoError::internal_error(format!("保存对象类型失败: {e}")))?;
-    Ok(Json(ApiResp::ok(json!({ "apiName": def.api_name, "saved": true }))))
+        .map_err(|e| match e {
+            StoreError::Conflict(m) => OntoError::conflict(m),
+            StoreError::NotFound(m) => OntoError::not_found(m),
+            other => OntoError::internal_error(format!("保存对象类型失败: {other}")),
+        })?;
+    Ok(Json(ApiResp::ok(
+        json!({ "apiName": def.api_name, "saved": true, "version": version }),
+    )))
 }
 
 /// POST /object-types/validate —— 仅结构校验（不落库）。
@@ -91,9 +101,22 @@ pub async fn get_link_type(Path(api_name): Path<String>) -> Result<Json<ApiResp<
     Ok(Json(ApiResp::ok(json!(def))))
 }
 
+/// B2 留痕：backing.fk 外键映射（`{"fk":{"sourceProperty","targetProperty"}}`——与前端
+/// `LINK_BACKING_FK` 常量互指，唯一口径）缺属性名时记服务端日志，不拒绝、不新增响应通道。
+fn log_backing_fk_gaps(api_name: &str, backing: &Value) {
+    let Some(fk) = backing.get("fk") else { return };
+    for key in ["sourceProperty", "targetProperty"] {
+        let v = fk.get(key).and_then(|x| x.as_str()).map(str::trim).unwrap_or("");
+        if v.is_empty() {
+            tracing::warn!(link = %api_name, field = key, "backing.fk 缺 {key}（映射不完整，速建气泡/关系 Inspector 应补齐）");
+        }
+    }
+}
+
 pub async fn save_link_type(Json(def): Json<LinkTypeDef>) -> Result<Json<ApiResp<Value>>> {
     def.validate()
         .map_err(|e| OntoError::business_error(format!("关系类型非法: {e}")))?;
+    log_backing_fk_gaps(&def.api_name, &def.backing);
     let tenant = current_tenant();
     store()
         .upsert_link_type(&tenant, &def)

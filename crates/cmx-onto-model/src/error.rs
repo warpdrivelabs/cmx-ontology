@@ -20,6 +20,9 @@ pub enum StoreError {
     /// 目标不存在。
     #[error("未找到: {0}")]
     NotFound(String),
+    /// 乐观锁冲突（B0：版本条件更新 0 行）——调用方应以 409 透出，提示刷新后重试。
+    #[error("并发冲突: {0}")]
+    Conflict(String),
 }
 
 /// 存储结果别名。
