@@ -14,6 +14,7 @@ pub mod handlers;
 pub mod action_handlers;
 pub mod action_templates;
 pub mod function_handlers;
+pub mod function_runtime;
 pub mod policy_handlers;
 pub mod funnel_handlers;
 pub mod import_handlers;

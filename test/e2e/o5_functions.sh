@@ -45,6 +45,25 @@ S1=$(curl "${H[@]}" -X POST "$B/functions/o5EastSum/evaluate" -d '{
 echo "objectset: $S1"
 chk "objectSet FEEL 东区总额(1500+800=2300)" "echo '$S1' | grep -qE '\"result\":2300'" "$S1"
 
+# 3b) Rhai runtime：阶梯累进个税（FEEL 表达不动的过程式逃生舱），标量输入
+curl "${H[@]}" -X POST "$B/functions" -d '{
+  "apiName":"o5RhaiTax","displayName":"阶梯个税","runtime":"rhai","kind":"query",
+  "inputs":[{"name":"income","type":"double"}],"output":{"type":"double"},
+  "body":"let t = 0.0; let b = income; for br in [[1000.0,0.2],[500.0,0.1],[0.0,0.03]] { if b > br[0] { t += (b - br[0]) * br[1]; b = br[0]; } } t","status":"active"}' >/dev/null
+R1=$(curl "${H[@]}" -X POST "$B/functions/o5RhaiTax/evaluate" -d '{"args":{"income":1500}}')
+echo "rhai: $R1"
+# 1500 → (1500-1000)*0.2 + (1000-500)*0.1 + (500-0)*0.03 = 100+50+15 = 165
+chk "Rhai 阶梯个税(1500→165)" "echo '$R1' | grep -qE '\"result\":165'" "$R1"
+
+# 3c) NativeRust runtime：编译期 Rust 阶梯个税（与 Rhai 对照，展示原生逃生舱；body=函数标识）
+curl "${H[@]}" -X POST "$B/functions" -d '{
+  "apiName":"o5NativeTax","displayName":"原生阶梯个税","runtime":"nativeRust","kind":"query",
+  "inputs":[{"name":"income","type":"double"}],"output":{"type":"double"},
+  "body":"nativeTierTax","status":"active"}' >/dev/null
+N1=$(curl "${H[@]}" -X POST "$B/functions/o5NativeTax/evaluate" -d '{"args":{"income":1500}}')
+echo "native: $N1"
+chk "NativeRust 阶梯个税(1500→165)" "echo '$N1' | grep -qE '\"result\":165'" "$N1"
+
 # 4) Aggregation 用途：走存储层 aggregate（Count 全体订单=3）
 curl "${H[@]}" -X POST "$B/functions" -d '{
   "apiName":"o5Count","displayName":"订单数","runtime":"feel","kind":"aggregation",
