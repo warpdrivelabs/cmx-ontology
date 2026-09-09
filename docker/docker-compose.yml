@@ -1,0 +1,34 @@
+# =============================================================================
+# cmx-ontology 本地运行编排
+# =============================================================================
+# 首次运行（导出配置模板到运行时目录并按环境修改，否则挂载空目录会缺配置启动失败）：
+#   mkdir -p runtime/config
+#   docker compose run --rm cmx-onto cat /opt/cmx/config-template.toml > runtime/config/docker.toml
+#   vi runtime/config/docker.toml     # 填真实数据库/Redis 地址（模板占位地址连不上库会启动退出；runtime/ 不入库）
+#
+# 运行：
+#   IMAGE_TAG=0.1.0 docker compose up -d      # 用 build-docker.sh 已构建的版本
+#   docker compose up -d --build              # 或就地构建后启动
+#   docker compose logs -f
+#
+# 停止：docker compose down（加 -v 连同名卷一起删；本文件用挂载目录，无卷可删）
+# =============================================================================
+services:
+  cmx-onto:
+    # build 与 image 同时给出：compose build 产出该 tag；已有镜像则直接使用
+    image: cmx-ontology:${IMAGE_TAG:-dev}
+    build:
+      # 构建上下文 = backend/（白名单见 backend/.dockerignore，与 scripts/build-docker.sh 一致）
+      context: ../..
+      dockerfile: cmx-ontology/docker/Dockerfile
+    container_name: cmx-onto
+    restart: unless-stopped
+    ports:
+      - "8097:8097"
+    # 容器内访问宿主侧数据库/Redis
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # 首次运行前先导出模板（见文件头）
+      - ./runtime/config:/app/config
+      - ./runtime/logs:/app/logs
