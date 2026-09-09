@@ -42,6 +42,12 @@ impl PgOntologyStore {
                 .await
                 .map_err(|e| StoreError::Backend(format!("建表失败: {e}")))?;
         }
+        // 表/列注释重放（COMMENT ON 幂等覆盖；语义见 ddl.rs 模块注释）。
+        for stmt in crate::ddl::DDL_COMMENTS {
+            execute_sql(&self.db_id, None, stmt)
+                .await
+                .map_err(|e| StoreError::Backend(format!("写表注释失败: {e}")))?;
+        }
         Ok(())
     }
 
