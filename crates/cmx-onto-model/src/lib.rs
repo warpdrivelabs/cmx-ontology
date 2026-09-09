@@ -11,6 +11,7 @@ pub mod store;
 
 pub mod action;
 pub mod feel;
+pub mod rhai_engine;
 pub mod function;
 pub mod authz;
 pub mod funnel;

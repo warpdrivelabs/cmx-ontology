@@ -298,8 +298,10 @@ async fn dispatch_one(tenant: &str, kind: &str, target: &str, payload: &Value) -
                 .await
                 .map_err(|e| format!("装载函数失败: {e}"))?
                 .ok_or_else(|| format!("函数 {target} 未定义"))?;
-            // payload 的字段作为 FEEL 上下文；无输入则纯求值 body。
-            cmx_onto_model::evaluate_function(&func, payload).map_err(|e| e.to_string())?;
+            // payload 的字段作为求值上下文；无输入则纯求值 body。
+            crate::function_runtime::eval_function_any(&func, payload)
+                .await
+                .map_err(|e| e.to_string())?;
             Ok(true)
         }
         // 外部投递（O4-M3 真投递）：webhook 真发 HTTP；startBusinessProcess 调 cmx-flowengine v1 起实例。

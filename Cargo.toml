@@ -60,6 +60,8 @@ tower-http = { version = "0.6", features = ["fs", "cors", "trace", "compression-
 dotenvy = "0.15"
 # O4-M3 dispatcher 出站（webhook 真发 + 调 flowengine v1 起实例）；rustls 与 flow/rules 对齐。
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# O5 函数 Rhai runtime（过程式逃生舱；沙箱 max_operations/call_levels，features 对齐 cmx-rulesengine）
+rhai = { version = "1.20", features = ["serde", "sync"] }
 
 [profile.release]
 opt-level = 3

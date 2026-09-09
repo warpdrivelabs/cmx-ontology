@@ -13,7 +13,7 @@ use crate::tenant::current_tenant;
 use axum::extract::Path;
 use axum::Json;
 use cmx_onto_model::objectset::{Aggregation, ObjectSet, Page};
-use cmx_onto_model::{evaluate_function, input_specs, FunctionKind, ObjectStore, OntologyStore};
+use cmx_onto_model::{input_specs, FunctionKind, ObjectStore, OntologyStore};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
@@ -125,7 +125,8 @@ pub async fn evaluate_fn(
     }
 
     let bound = Value::Object(ctx);
-    let result = evaluate_function(&func, &bound)
+    let result = crate::function_runtime::eval_function_any(&func, &bound)
+        .await
         .map_err(|e| OntoError::business_error(format!("函数求值失败: {e}")))?;
 
     Ok(Json(ApiResp::ok(json!({

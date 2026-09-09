@@ -1,11 +1,11 @@
 //! O5 函数计算引擎 · 内核（纯逻辑、零 IO、可单测）。
 //!
 //! 一个 [`FunctionDef`](crate::FunctionDef) 把「输入参数（对象/对象集/标量）+ 函数体」求值成结果。
-//! M1 只做 FEEL runtime（默认、最常用）：把已绑定的输入作为 FEEL 上下文求值 `body`。
+//! runtime：FEEL（默认、声明式表达式）与 Rhai（过程式脚本逃生舱，见 [`crate::rhai_engine`]）就地求值 `body`。
 //! `object`/`objectSet` 类型的输入由**壳层**先从存储加载好、以 JSON 注入 ctx，本模块只管求值（保持零 IO）。
 //!
 //! 支持用途（kind）：Query / DerivedProperty / Validation —— 皆表达式求值；
-//! Aggregation 走存储层聚合（壳层分派，不在此）；Rhai/Wasm/NativeRust 运行时 M1 未实现。
+//! Aggregation 走存储层聚合（壳层分派，不在此）；Wasm/NativeRust 运行时尚未实现。
 
 use crate::def::{FunctionDef, FunctionRuntime};
 use crate::feel::eval_expression;
@@ -16,7 +16,7 @@ use serde_json::{Map, Value};
 pub enum FunctionError {
     #[error("缺输入参数「{0}」")]
     MissingInput(String),
-    #[error("运行时 {0} 尚未支持（M1 仅 FEEL）")]
+    #[error("运行时 {0} 尚未支持（当前支持 FEEL / Rhai）")]
     UnsupportedRuntime(String),
     #[error("函数体为空")]
     EmptyBody,
@@ -62,7 +62,8 @@ pub fn check_inputs(func: &FunctionDef, bound: &Value) -> Result<()> {
 
 /// 用已绑定输入 `bound`（含标量 + 壳层注入的 object/objectSet JSON）求值函数体。
 ///
-/// M1：仅 FEEL runtime。`bound` 的字段即 FEEL 顶层变量（`amount`、`order.total`、`orders[...]`）。
+/// FEEL/Rhai 在 model 内联求值；Wasm/NativeRust 由**壳层**（cmx-onto-app）在调用本函数前按 runtime
+/// 异步分派（Extism 插件 / 编译期函数表），故本模块只回 `UnsupportedRuntime` 作安全网。
 pub fn evaluate(func: &FunctionDef, bound: &Value) -> Result<Value> {
     match func.runtime {
         FunctionRuntime::Feel => {
@@ -74,7 +75,15 @@ pub fn evaluate(func: &FunctionDef, bound: &Value) -> Result<Value> {
             let ctx = ensure_object(bound);
             eval_expression(body, &ctx).map_err(|e| FunctionError::Eval(e.to_string()))
         }
-        FunctionRuntime::Rhai => Err(FunctionError::UnsupportedRuntime("Rhai".into())),
+        FunctionRuntime::Rhai => {
+            let body = func.body.trim();
+            if body.is_empty() {
+                return Err(FunctionError::EmptyBody);
+            }
+            check_inputs(func, bound)?;
+            let ctx = ensure_object(bound);
+            crate::rhai_engine::eval_script(body, &ctx).map_err(FunctionError::Eval)
+        }
         FunctionRuntime::Wasm => Err(FunctionError::UnsupportedRuntime("Wasm".into())),
         FunctionRuntime::NativeRust => Err(FunctionError::UnsupportedRuntime("NativeRust".into())),
     }
@@ -137,8 +146,30 @@ mod tests {
     fn empty_body_and_unsupported_runtime() {
         let f = feel_fn(json!([]), "   ");
         assert!(matches!(evaluate(&f, &json!({})), Err(FunctionError::EmptyBody)));
+        // Wasm/NativeRust 仍未实现
         let mut r = feel_fn(json!([]), "1");
-        r.runtime = FunctionRuntime::Rhai;
+        r.runtime = FunctionRuntime::Wasm;
         assert!(matches!(evaluate(&r, &json!({})), Err(FunctionError::UnsupportedRuntime(_))));
+        r.runtime = FunctionRuntime::NativeRust;
+        assert!(matches!(evaluate(&r, &json!({})), Err(FunctionError::UnsupportedRuntime(_))));
+    }
+
+    #[test]
+    fn rhai_runtime_evaluates() {
+        // Rhai 过程式：阶梯累进 loop（FEEL 表达不动）
+        let mut f = feel_fn(
+            json!([{ "name": "income", "type": "double" }]),
+            "let t = 0.0; let b = income; \
+             for br in [[25000.0, 0.25], [12000.0, 0.20], [0.0, 0.10]] \
+             { if b > br[0] { t += (b - br[0]) * br[1]; b = br[0]; } } t",
+        );
+        f.runtime = FunctionRuntime::Rhai;
+        assert!(evaluate(&f, &json!({ "income": 30000 })).unwrap().as_f64().unwrap() > 0.0);
+        // check_inputs 复用：缺输入报错
+        assert!(matches!(evaluate(&f, &json!({})), Err(FunctionError::MissingInput(_))));
+        // 与 FEEL 输出一致（数值归一 f64）
+        let mut g = feel_fn(json!([{ "name": "amount", "type": "double" }]), "amount * 5");
+        g.runtime = FunctionRuntime::Rhai;
+        assert_eq!(evaluate(&g, &json!({ "amount": 8000 })).unwrap(), json!(40000.0));
     }
 }
