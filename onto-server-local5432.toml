@@ -13,8 +13,17 @@ db_url = "postgres://dbuser_dba:9lWsRQY4i4VToPpkHcCRFzki@192.168.157.46:5432/cmx
 default = true
 
 [auth]
-mode = "off"
+mode = "jwt"                # 生产务必 jwt（off 模式租户取 X-Tenant 头，越权隐患；且委托令牌无法验签，用户身份断链）
 tenancy = "single"
+jwt_alg = "HS256"
+
+# ★ 委托令牌始终验签，此密钥必须 = 平台签发 JWT 的密钥（JwtConfig 默认 secret）。
+jwt_secret = "a7k9m2p4x8q1w5e3r6t0y7u2i9o4p1"
+jwt_tenant_claim = "tenant"
+jwt_roles_claim = "roles"
+
+# 服务间 API Key（key:tenant）——门户反代注入 X-API-Key + X-Delegated-User-Token 时据此建 scope。
+api_keys = "cmx_sk_dev_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6:default"
 
 [assets]
 ui_native_dir = "../cmx-container/assets/onto/web/ui-native"

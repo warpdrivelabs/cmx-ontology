@@ -15,10 +15,15 @@ db_type = "postgres"
 db_url = "postgres://postgres:postgres@host.docker.internal:5432/cmx_fico"
 default = true
 
-# off = 不认证；生产务必 jwt。api_keys 接受门户反代注入的 X-API-Key
+# 认证：jwt = 委托令牌验签取真实用户身份（off 模式租户取 X-Tenant 头，越权隐患）。
+# jwt_secret 必须 = 平台签发 JWT 的密钥（cmx-auth JwtConfig 默认 secret）；api_keys 接受门户反代注入的 X-API-Key
 [auth]
-mode = "off"
+mode = "jwt"
 tenancy = "single"
+jwt_alg = "HS256"
+jwt_secret = "a7k9m2p4x8q1w5e3r6t0y7u2i9o4p1"
+jwt_tenant_claim = "tenant"
+jwt_roles_claim = "roles"
 api_keys = "cmx_sk_dev_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6:default"
 
 # 页面资产（镜像内随包 cmx-container/assets/onto：四区本体设计工作台 + 本体图组件）

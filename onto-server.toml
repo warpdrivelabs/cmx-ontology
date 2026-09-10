@@ -21,10 +21,26 @@ db_type = "postgres"
 db_url = "postgres://postgres:postgres@127.0.0.1:5432/postgres"
 default = true
 
-# —— 认证（[auth] 段，ConfigManager 直读；off = 不认证，单租户零回归；multi = db-per-tenant）——
+# —— 认证（[auth] 段，ConfigManager 直读；形态与 flow-server.toml 对齐；tenancy: single | multi = db-per-tenant）——
 [auth]
-mode = "off"
-tenancy = "single"
+mode = "jwt"                # 生产务必 jwt（off 模式租户取 X-Tenant 头，越权隐患；且委托令牌无法验签，用户身份断链）
+jwt_alg = "HS256"           # 与平台 JwtConfig 算法一致
+
+# ★ 委托令牌始终验签，此密钥必须 = 平台签发 JWT 的密钥。
+#   平台真源：cmx-container 未配 [auth.jwt] 段 → 用 JwtConfig 默认
+#   (crates/libs/cmx-infra/cmx-auth/src/config.rs 的 JwtConfig 默认 secret)。
+#   若平台 dev-local.toml 配了自定义 auth.jwt.secret，改成那个值。
+jwt_secret = "a7k9m2p4x8q1w5e3r6t0y7u2i9o4p1"
+jwt_tenant_claim = "tenant"
+jwt_roles_claim = "roles"
+
+# ★ 服务间 API Key（命中即免 JWT 验签，key:回退租户）。
+#   必须 = 平台 [service_auth].outgoing_api_key（cmx-container/dev-local.toml）。
+#   平台代理注入 X-API-Key 为此值，命中后走服务身份 + 委托令牌取真实办理人。
+api_keys = "cmx_sk_dev_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6:default"
+
+# 多租户（默认单库；db-per-tenant 隔离时设 multi）
+# tenancy = "single"
 
 # —— 页面资产（[assets] 段：native 页面投递目录；四区本体设计工作台 + 本体图组件 vendor）——
 [assets]
