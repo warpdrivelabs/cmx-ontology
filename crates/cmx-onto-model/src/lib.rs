@@ -148,6 +148,84 @@ mod tests {
         assert!(e.contains("两端"), "应报两端不能为空: {e}");
     }
 
+    // ───────── backing 强类型（#5） ─────────
+
+    #[test]
+    fn backing_parsed_defaults_to_edge() {
+        // 空 backing（未指定）→ Edge。
+        let lt = LinkTypeDef {
+            api_name: "l".into(),
+            object_type_a: "A".into(),
+            object_type_b: "B".into(),
+            ..Default::default()
+        };
+        assert_eq!(lt.backing_parsed(), LinkBacking::Edge);
+    }
+
+    #[test]
+    fn backing_parsed_foreign_key() {
+        let lt: LinkTypeDef = serde_json::from_value(json!({
+            "apiName": "orderByCustomer",
+            "objectTypeA": "Customer",
+            "objectTypeB": "Order",
+            "backing": { "kind": "foreignKey", "property": "customerId", "side": "b" }
+        }))
+        .unwrap();
+        assert_eq!(
+            lt.backing_parsed(),
+            LinkBacking::ForeignKey { property: "customerId".into(), side: LinkEnd::B }
+        );
+        assert!(lt.validate().is_ok());
+    }
+
+    #[test]
+    fn backing_foreign_key_side_defaults_to_a() {
+        // side 缺省 → A。
+        let lt: LinkTypeDef = serde_json::from_value(json!({
+            "apiName": "l", "objectTypeA": "A", "objectTypeB": "B",
+            "backing": { "kind": "foreignKey", "property": "ref" }
+        }))
+        .unwrap();
+        assert_eq!(
+            lt.backing_parsed(),
+            LinkBacking::ForeignKey { property: "ref".into(), side: LinkEnd::A }
+        );
+    }
+
+    #[test]
+    fn backing_foreign_key_empty_property_rejected() {
+        let lt: LinkTypeDef = serde_json::from_value(json!({
+            "apiName": "l", "objectTypeA": "A", "objectTypeB": "B",
+            "backing": { "kind": "foreignKey", "property": "" }
+        }))
+        .unwrap();
+        let e = lt.validate().unwrap_err().to_string();
+        assert!(e.contains("property"), "应报 FK property 不能为空: {e}");
+    }
+
+    #[test]
+    fn backing_foreign_key_bad_property_rejected() {
+        let lt: LinkTypeDef = serde_json::from_value(json!({
+            "apiName": "l", "objectTypeA": "A", "objectTypeB": "B",
+            "backing": { "kind": "foreignKey", "property": "2bad; DROP" }
+        }))
+        .unwrap();
+        assert!(lt.validate().is_err());
+    }
+
+    #[test]
+    fn backing_garbage_falls_back_to_edge() {
+        // 非法/无法识别的 backing JSON → Edge 兜底（不崩、向后兼容）。
+        let lt: LinkTypeDef = serde_json::from_value(json!({
+            "apiName": "l", "objectTypeA": "A", "objectTypeB": "B",
+            "backing": { "kind": "bogusKind" }
+        }))
+        .unwrap();
+        assert_eq!(lt.backing_parsed(), LinkBacking::Edge);
+        // Edge 兜底下 validate 不因 backing 报错。
+        assert!(lt.validate().is_ok());
+    }
+
     // ───────── 其余四类校验 ─────────
 
     #[test]
@@ -157,6 +235,110 @@ mod tests {
         assert!(SharedPropertyTypeDef { api_name: "currencyCode".into(), ..Default::default() }.validate().is_ok());
         assert!(ActionTypeDef { api_name: "reassignOrder".into(), ..Default::default() }.validate().is_ok());
         assert!(FunctionDef { api_name: "delayRisk".into(), ..Default::default() }.validate().is_ok());
+    }
+
+    // ───────── 接口强校验 validate_implements（#4） ─────────
+
+    fn shared_prop(name: &str, bt: PropertyBaseType) -> SharedPropertyTypeDef {
+        SharedPropertyTypeDef { api_name: name.into(), base_type: bt, ..Default::default() }
+    }
+
+    fn prop_ref(name: &str, spt: &str, bt: PropertyBaseType) -> PropertyTypeDef {
+        PropertyTypeDef {
+            api_name: name.into(),
+            base_type: bt,
+            shared_property: Some(spt.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn implements_ok_when_shared_property_present_and_typed() {
+        let iface = InterfaceDef {
+            api_name: "Locatable".into(),
+            properties: vec!["geohash".into()],
+            ..Default::default()
+        };
+        let spt = shared_prop("geohash", PropertyBaseType::Geohash);
+        let ot = ObjectTypeDef {
+            api_name: "Store".into(),
+            implements: vec!["Locatable".into()],
+            properties: vec![prop_ref("loc", "geohash", PropertyBaseType::Geohash)],
+            ..Default::default()
+        };
+        assert!(validate_implements(&ot, &[iface], &[spt]).is_ok());
+    }
+
+    #[test]
+    fn implements_no_declarations_is_ok() {
+        let ot = ObjectTypeDef { api_name: "Plain".into(), ..Default::default() };
+        assert!(validate_implements(&ot, &[], &[]).is_ok());
+    }
+
+    #[test]
+    fn implements_missing_shared_property_rejected() {
+        let iface = InterfaceDef {
+            api_name: "Locatable".into(),
+            properties: vec!["geohash".into()],
+            ..Default::default()
+        };
+        let spt = shared_prop("geohash", PropertyBaseType::Geohash);
+        // 对象类型没有引用 geohash 的属性。
+        let ot = ObjectTypeDef {
+            api_name: "Store".into(),
+            implements: vec!["Locatable".into()],
+            properties: vec![prop("id")],
+            ..Default::default()
+        };
+        let e = validate_implements(&ot, &[iface], &[spt]).unwrap_err().to_string();
+        assert!(e.contains("未满足") && e.contains("geohash"), "应报缺少共享属性: {e}");
+    }
+
+    #[test]
+    fn implements_type_mismatch_rejected() {
+        let iface = InterfaceDef {
+            api_name: "Locatable".into(),
+            properties: vec!["geohash".into()],
+            ..Default::default()
+        };
+        let spt = shared_prop("geohash", PropertyBaseType::Geohash);
+        // 引用了共享属性但 baseType 不符（String ≠ Geohash）。
+        let ot = ObjectTypeDef {
+            api_name: "Store".into(),
+            implements: vec!["Locatable".into()],
+            properties: vec![prop_ref("loc", "geohash", PropertyBaseType::String)],
+            ..Default::default()
+        };
+        assert!(validate_implements(&ot, &[iface], &[spt]).is_err());
+    }
+
+    #[test]
+    fn implements_unknown_interface_rejected() {
+        let ot = ObjectTypeDef {
+            api_name: "Store".into(),
+            implements: vec!["Ghost".into()],
+            ..Default::default()
+        };
+        let e = validate_implements(&ot, &[], &[]).unwrap_err().to_string();
+        assert!(e.contains("Ghost") && e.contains("未定义"), "应报接口未定义: {e}");
+    }
+
+    #[test]
+    fn implements_unknown_shared_property_rejected() {
+        // 接口要求某共享属性，但该共享属性定义缺失。
+        let iface = InterfaceDef {
+            api_name: "Locatable".into(),
+            properties: vec!["geohash".into()],
+            ..Default::default()
+        };
+        let ot = ObjectTypeDef {
+            api_name: "Store".into(),
+            implements: vec!["Locatable".into()],
+            properties: vec![prop_ref("loc", "geohash", PropertyBaseType::Geohash)],
+            ..Default::default()
+        };
+        let e = validate_implements(&ot, &[iface], &[]).unwrap_err().to_string();
+        assert!(e.contains("geohash") && e.contains("未定义"), "应报共享属性未定义: {e}");
     }
 
     // ───────── 序列化契约（camelCase + 枚举 round-trip） ─────────

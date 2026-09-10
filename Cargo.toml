@@ -40,6 +40,9 @@ cmx-utils = { path = "../cmx-container/crates/libs/cmx-utils", version = "0.1.12
 cmx-engine-kit = { path = "../cmx-container/crates/libs/cmx-engine-kit", version = "0.1.12" }
 # 页面只读投递（native/html-pages 六端点通用路由；四区本体设计工作台 + 本体图组件 vendor）
 cmx-form = { path = "../cmx-container/crates/libs/cmx-form", version = "0.1.12" }
+# O6 读侧硬门：复用 cmx-data-auth 的零 IO 脱敏内核（apply_masks + MaskType::Hide，比 *** 更强）。
+# 仅取其纯函数脱敏层，不引 dataauth-store-pg / 不接其维度 PDP（onto 用自有 om_policy 行残差）。
+cmx-dataauth-core = { path = "../cmx-data-auth/crates/cmx-dataauth-core", version = "0.1.0" }
 
 # —— 外部 crate（版本照抄 cmx-container 根 [workspace.dependencies]，与 flow/rules 对齐）——
 serde = { version = "1.0", features = ["derive"] }

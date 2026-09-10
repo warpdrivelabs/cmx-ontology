@@ -24,6 +24,7 @@ pub mod object_engine;
 pub mod object_handlers;
 pub mod openapi;
 pub mod outbound;
+pub mod pep;
 pub mod resp;
 pub mod stats;
 pub mod tenancy;

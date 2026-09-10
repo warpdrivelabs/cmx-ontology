@@ -3,7 +3,7 @@
 //! 复用定义层存储 [`PgOntologyStore`](crate::PgOntologyStore)：关系 apiName → (A端类型, B端类型)。
 
 use async_trait::async_trait;
-use cmx_onto_model::{LinkEnds, LinkResolver, OntologyStore, StoreResult};
+use cmx_onto_model::{LinkBacking, LinkEnds, LinkResolver, OntologyStore, StoreResult};
 
 use crate::PgOntologyStore;
 
@@ -27,5 +27,14 @@ impl LinkResolver for PgLinkResolver {
             .get_link_type(tenant, link)
             .await?
             .map(|lt| (lt.object_type_a, lt.object_type_b)))
+    }
+
+    async fn backing(&self, tenant: &str, link: &str) -> StoreResult<LinkBacking> {
+        Ok(self
+            .store
+            .get_link_type(tenant, link)
+            .await?
+            .map(|lt| lt.backing_parsed())
+            .unwrap_or(LinkBacking::Edge))
     }
 }
