@@ -55,6 +55,29 @@ impl PgObjectStore {
             .map_err(|e| StoreError::Backend(format!("查询失败: {e}")))
     }
 
+    /// 查询，表不存在（42P01）时归一 `None` 并记 warn：per-type 表懒创建（首次写入对象
+    /// 才建），「类型已定义但从未写入」是正常业务态——读侧按空结果返回而非 500，同时
+    /// 留痕供排查（空结果是表不存在导致，不是真无数据）。绕过 [`Self::query`] 是为了在
+    /// 包装成字符串前拿到结构化 SQLSTATE 判定。
+    async fn query_or_empty(
+        &self,
+        sql: &str,
+        params: Vec<DataValue>,
+        ds_id: &str,
+        t: &str,
+    ) -> StoreResult<Option<DataSet>> {
+        match query_sql_with_params(&self.db_id, None, sql, SqlParams::DataValues(params), ds_id)
+            .await
+        {
+            Ok(ds) => Ok(Some(ds)),
+            Err(e) if e.is_undefined_table() => {
+                tracing::warn!("对象表 {t} 不存在（该类型尚未写入数据，懒建表未触发），按空结果返回");
+                Ok(None)
+            }
+            Err(e) => Err(StoreError::Backend(format!("查询失败: {e}"))),
+        }
+    }
+
     /// O2 乐观锁修改：读改写，条件 `updated_at == expected`。
     ///
     /// 返回 `(status, updated_at, props)`：status ∈ ok/conflict/notFound。expected 为 None 时不校验版本
@@ -67,14 +90,19 @@ impl PgObjectStore {
         expected_updated_at: Option<&str>,
     ) -> StoreResult<(String, Option<String>, Option<Value>)> {
         let t = object_table(object_type)?;
-        // 读当前
-        let ds = self
-            .query(
+        // 读当前（表不存在 = 该类型尚无任何对象 → notFound，而非 500）
+        let ds = match self
+            .query_or_empty(
                 &format!("SELECT props, updated_at FROM {t} WHERE pk = $1"),
                 vec![DataValue::String(pk.to_string())],
                 "oo_optlock_read",
+                &t,
             )
-            .await?;
+            .await?
+        {
+            Some(ds) => ds,
+            None => return Ok(("notFound".into(), None, None)),
+        };
         let schema = ds.schema.as_ref();
         let mut cur_props: Option<serde_json::Map<String, Value>> = None;
         let mut cur_uat: Option<String> = None;
@@ -277,11 +305,22 @@ impl ObjectStore for PgObjectStore {
                 vec![DataValue::String(pk.to_string())],
             )
             .await;
-        self.exec(
+        // 表不存在（懒建表未触发）= 本无对象可删 → 0 行；绕过 exec 在包装前拿 SQLSTATE。
+        match execute_sql_with_params(
+            &self.db_id,
+            None,
             &format!("DELETE FROM {t} WHERE pk = $1"),
-            vec![DataValue::String(pk.to_string())],
+            SqlParams::DataValues(vec![DataValue::String(pk.to_string())]),
         )
         .await
+        {
+            Ok(n) => Ok(n),
+            Err(e) if e.is_undefined_table() => {
+                tracing::warn!("对象表 {t} 不存在（该类型尚未写入数据，懒建表未触发），删除按 0 行处理");
+                Ok(0)
+            }
+            Err(e) => Err(StoreError::Backend(format!("执行失败: {e}"))),
+        }
     }
 
     async fn put_link(&self, _tenant: &str, edge: &LinkEdge) -> StoreResult<()> {
@@ -344,7 +383,19 @@ impl ObjectStore for PgObjectStore {
         let mut params = compiled.params;
         params.push(DataValue::Int(limit as i64));
         params.push(DataValue::Int(page.offset as i64));
-        let ds = self.query(&sql, params, "onto_load").await?;
+        // 表不存在（懒建表未触发）→ 空页；其余查询错误照常透出。
+        let ds = match self.query_or_empty(&sql, params, "onto_load", &t).await? {
+            Some(ds) => ds,
+            None => {
+                return Ok(ObjectPage {
+                    object_type: compiled.terminal_type,
+                    rows: Vec::new(),
+                    limit,
+                    offset: page.offset,
+                    has_more: false,
+                })
+            }
+        };
         let schema = ds.schema.as_ref();
         let mut out = Vec::new();
         for row in ds.iter() {
@@ -379,7 +430,9 @@ impl ObjectStore for PgObjectStore {
         match agg {
             Aggregation::Count => {
                 let sql = format!("SELECT COUNT(*) AS n FROM {t} o WHERE o.pk IN ({inner})");
-                let ds = self.query(&sql, compiled.params, "onto_agg_count").await?;
+                let Some(ds) = self.query_or_empty(&sql, compiled.params, "onto_agg_count", &t).await? else {
+                    return Ok(json!({ "count": 0 }));
+                };
                 let n = ds
                     .iter()
                     .next()
@@ -393,7 +446,9 @@ impl ObjectStore for PgObjectStore {
                     "SELECT (o.props ->> '{name}') AS g, COUNT(*) AS n FROM {t} o \
                      WHERE o.pk IN ({inner}) GROUP BY g ORDER BY n DESC"
                 );
-                let ds = self.query(&sql, compiled.params, "onto_agg_group").await?;
+                let Some(ds) = self.query_or_empty(&sql, compiled.params, "onto_agg_group", &t).await? else {
+                    return Ok(json!({ "groups": [] }));
+                };
                 let schema = ds.schema.as_ref();
                 let mut buckets = Vec::new();
                 for row in ds.iter() {
@@ -412,7 +467,9 @@ impl ObjectStore for PgObjectStore {
                      COALESCE(SUM((o.props ->> '{s}')::numeric), 0) AS s FROM {t} o \
                      WHERE o.pk IN ({inner}) GROUP BY g ORDER BY s DESC"
                 );
-                let ds = self.query(&sql, compiled.params, "onto_agg_sum").await?;
+                let Some(ds) = self.query_or_empty(&sql, compiled.params, "onto_agg_sum", &t).await? else {
+                    return Ok(json!({ "groups": [] }));
+                };
                 let schema = ds.schema.as_ref();
                 let mut buckets = Vec::new();
                 for row in ds.iter() {
