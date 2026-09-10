@@ -703,6 +703,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmx-dataauth-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
 name = "cmx-database-pg"
 version = "0.1.12"
 dependencies = [
@@ -794,6 +806,7 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
+ "cmx-dataauth-core",
  "cmx-database-pg",
  "cmx-engine-kit",
  "cmx-onto-model",

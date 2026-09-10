@@ -135,6 +135,7 @@ pub const DDL_STATEMENTS: &[&str] = &[
         object_type     VARCHAR(128),
         subject_kind    VARCHAR(16)  NOT NULL DEFAULT 'role',
         subject         VARCHAR(128) NOT NULL,
+        effect          VARCHAR(16)  NOT NULL DEFAULT 'allow',
         row_filter      JSONB        NOT NULL DEFAULT '[]',
         deny_markings   JSONB        NOT NULL DEFAULT '[]',
         deny_actions    JSONB        NOT NULL DEFAULT '[]',
@@ -143,6 +144,8 @@ pub const DDL_STATEMENTS: &[&str] = &[
     )"#,
     "CREATE INDEX IF NOT EXISTS idx_om_policy_match ON om_policy (object_type, subject_kind, subject)",
     "ALTER TABLE om_policy ADD COLUMN IF NOT EXISTS deny_actions JSONB NOT NULL DEFAULT '[]'",
+    // 读侧硬门（#3）：effect=deny 语义（deny_read → 403）；幂等补列，既有库自动迁移。
+    "ALTER TABLE om_policy ADD COLUMN IF NOT EXISTS effect VARCHAR(16) NOT NULL DEFAULT 'allow'",
     // 对象类型 DAM 三级分类（域/应用/模块）——本体图分域折叠；幂等补列。
     "ALTER TABLE om_object_type ADD COLUMN IF NOT EXISTS dam JSONB NOT NULL DEFAULT '{}'",
     // 对象类型 业务单据类型（对象浏览器在模块下再分一层）；幂等补列。

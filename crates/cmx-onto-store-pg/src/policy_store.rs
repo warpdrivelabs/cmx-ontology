@@ -9,13 +9,22 @@ use cmx_onto_model::objectset::Predicate;
 use cmx_onto_model::{StoreError, StoreResult};
 use serde_json::{json, Value};
 
-/// 一条适用策略（匹配后返回，供合并残差 + 脱敏）。
+/// 一条适用策略（匹配后返回，供合并残差 + 脱敏 + 硬门判定）。
 #[derive(Debug, Clone)]
 pub struct AppliedPolicy {
     pub api_name: String,
+    /// 策略效果：`allow`（默认，授予 + 行残差 + 列脱敏）/ `deny`（读侧硬拒 → 403）。
+    pub effect: String,
     pub row_filter: Vec<Predicate>,
     pub deny_markings: Vec<String>,
     pub deny_actions: Vec<String>,
+}
+
+impl AppliedPolicy {
+    /// 是否 deny 效果（读侧硬门据此 403）。空/未知 effect 视为 allow（向后兼容）。
+    pub fn is_deny(&self) -> bool {
+        self.effect.eq_ignore_ascii_case("deny")
+    }
 }
 
 /// 策略存储（借用 db_id；与 PgObjectStore 同源）。
@@ -42,10 +51,10 @@ impl PolicyStore {
         execute_sql_with_params(
             &self.db_id,
             None,
-            "INSERT INTO om_policy (api_name, display_name, object_type, subject_kind, subject, row_filter, deny_markings, deny_actions, status, created_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, now()) \
+            "INSERT INTO om_policy (api_name, display_name, object_type, subject_kind, subject, effect, row_filter, deny_markings, deny_actions, status, created_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now()) \
              ON CONFLICT (api_name) DO UPDATE SET display_name=EXCLUDED.display_name, object_type=EXCLUDED.object_type, \
-             subject_kind=EXCLUDED.subject_kind, subject=EXCLUDED.subject, row_filter=EXCLUDED.row_filter, \
+             subject_kind=EXCLUDED.subject_kind, subject=EXCLUDED.subject, effect=EXCLUDED.effect, row_filter=EXCLUDED.row_filter, \
              deny_markings=EXCLUDED.deny_markings, deny_actions=EXCLUDED.deny_actions, status=EXCLUDED.status",
             SqlParams::DataValues(vec![
                 DataValue::String(api_name.clone()),
@@ -56,6 +65,7 @@ impl PolicyStore {
                 },
                 DataValue::String({ let s = g("subjectKind"); if s.is_empty() { "role".into() } else { s } }),
                 DataValue::String(g("subject")),
+                DataValue::String({ let s = g("effect"); if s.is_empty() { "allow".into() } else { s } }),
                 DataValue::Json(jarr("rowFilter")),
                 DataValue::Json(jarr("denyMarkings")),
                 DataValue::Json(jarr("denyActions")),
@@ -72,7 +82,7 @@ impl PolicyStore {
         let ds = query_sql_with_params(
             &self.db_id,
             None,
-            "SELECT api_name, display_name, object_type, subject_kind, subject, row_filter, deny_markings, deny_actions, status \
+            "SELECT api_name, display_name, object_type, subject_kind, subject, effect, row_filter, deny_markings, deny_actions, status \
              FROM om_policy ORDER BY api_name",
             SqlParams::DataValues(vec![]),
             "om_policy_list",
@@ -85,12 +95,14 @@ impl PolicyStore {
             let g = |c: &str| crate::object_store::row_text(r, schema, c);
             let ot = g("object_type");
             let object_type = if ot.is_empty() || ot == "Null" { Value::Null } else { Value::String(ot) };
+            let effect = { let e = g("effect"); if e.is_empty() { "allow".to_string() } else { e } };
             out.push(json!({
                 "apiName": g("api_name"),
                 "displayName": g("display_name"),
                 "objectType": object_type,
                 "subjectKind": g("subject_kind"),
                 "subject": g("subject"),
+                "effect": effect,
                 "rowFilter": serde_json::from_str::<Value>(&g("row_filter")).unwrap_or(json!([])),
                 "denyMarkings": serde_json::from_str::<Value>(&g("deny_markings")).unwrap_or(json!([])),
                 "denyActions": serde_json::from_str::<Value>(&g("deny_actions")).unwrap_or(json!([])),
@@ -125,7 +137,7 @@ impl PolicyStore {
         let ds = query_sql_with_params(
             &self.db_id,
             None,
-            "SELECT api_name, object_type, subject_kind, subject, row_filter, deny_markings, deny_actions \
+            "SELECT api_name, object_type, subject_kind, subject, effect, row_filter, deny_markings, deny_actions \
              FROM om_policy WHERE status = 'active' AND (object_type IS NULL OR object_type = $1)",
             SqlParams::DataValues(vec![DataValue::String(object_type.to_string())]),
             "om_policy_match",
@@ -146,9 +158,37 @@ impl PolicyStore {
                 serde_json::from_str(&g("row_filter")).unwrap_or_default();
             let deny: Vec<String> = serde_json::from_str(&g("deny_markings")).unwrap_or_default();
             let deny_actions: Vec<String> = serde_json::from_str(&g("deny_actions")).unwrap_or_default();
-            out.push(AppliedPolicy { api_name: g("api_name"), row_filter: filters, deny_markings: deny, deny_actions });
+            let effect = { let e = g("effect"); if e.is_empty() { "allow".to_string() } else { e } };
+            out.push(AppliedPolicy { api_name: g("api_name"), effect, row_filter: filters, deny_markings: deny, deny_actions });
         }
         Ok(out)
+    }
+
+    /// 该对象类型是否"受控"——存在**针对它**（object_type = $1，不含全局 NULL）的 active `allow` 策略。
+    ///
+    /// 读侧硬门据此判 default-deny：受控类型无 allow 命中 → 403；非受控（无任何针对性 allow 策略）→
+    /// 放行（向后兼容既有大量无策略类型）。与主体无关，故 subjects 为空也能判。
+    pub async fn is_controlled_type(&self, object_type: &str) -> StoreResult<bool> {
+        if object_type.is_empty() {
+            return Ok(false);
+        }
+        let ds = query_sql_with_params(
+            &self.db_id,
+            None,
+            "SELECT COUNT(*) AS n FROM om_policy \
+             WHERE status = 'active' AND object_type = $1 AND lower(effect) = 'allow'",
+            SqlParams::DataValues(vec![DataValue::String(object_type.to_string())]),
+            "om_policy_controlled",
+        )
+        .await
+        .map_err(|e| StoreError::Backend(format!("查受控类型失败: {e}")))?;
+        let n = ds
+            .iter()
+            .next()
+            .map(|r| crate::object_store::row_text(r, ds.schema.as_ref(), "n"))
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+        Ok(n > 0)
     }
 
     /// 写侧 PEP：检查某动作是否被主体的某条策略拒绝。返回拒绝策略 apiName（None=放行）。

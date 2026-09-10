@@ -10,7 +10,7 @@ use crate::tenant::current_tenant;
 use axum::extract::Path;
 use axum::Json;
 use cmx_onto_model::objectset::{Aggregation, LinkEdge, ObjectRecord, ObjectSet, Page};
-use cmx_onto_model::{ObjectStore, OntologyStore};
+use cmx_onto_model::{LinkResolver, ObjectStore, OntologyStore};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -162,7 +162,7 @@ pub async fn delete_link(Json(req): Json<LinkReq>) -> Result<Json<ApiResp<Value>
     Ok(Json(ApiResp::ok(json!({ "link": req.link, "deleted": n > 0 }))))
 }
 
-/// 对象集加载请求体：{ objectSet: <代数>, limit?, offset? }。
+/// 对象集加载请求体：{ objectSet: <代数>, limit?, offset?, subjects? }。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoadReq {
@@ -171,44 +171,61 @@ pub struct LoadReq {
     pub limit: Option<u32>,
     #[serde(default)]
     pub offset: Option<u32>,
+    /// 主体覆盖（`["role:east","user:bob"]`；读侧硬门 PEP 用）。auth off/单租户下调用方声明；
+    /// jwt 模式以令牌为准。空则回退上下文（role:tenant + user）。
+    #[serde(default)]
+    pub subjects: Vec<String>,
 }
 
-/// POST /object-sets/load —— 编译对象集代数为一条 SQL 并加载（分页）。
+/// POST /object-sets/load —— 编译对象集代数为一条 SQL 并加载（读侧硬门 → 分页 → 列脱敏）。
 pub async fn load_object_set(Json(req): Json<LoadReq>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
+    let subjects = crate::pep::subjects_from(&req.subjects);
+    // 读侧硬门：终端类型策略匹配 → 硬拒 / 行残差折入。
+    let terminal = req.object_set.terminal_object_type().unwrap_or("").to_string();
+    let (secured_set, mask_plan) =
+        crate::pep::enforce_read(&tenant, &subjects, &terminal, req.object_set.clone()).await?;
     let page = Page {
         limit: req.limit.unwrap_or(100),
         offset: req.offset.unwrap_or(0),
     };
     let lr = link_resolver();
-    let page_out = object_store()
-        .load(&tenant, &req.object_set, &page, &lr)
+    let mut page_out = object_store()
+        .load(&tenant, &secured_set, &page, &lr)
         .await
         .map_err(|e| OntoError::internal_error(format!("加载对象集失败: {e}")))?;
+    mask_plan.apply(&mut page_out.rows);
     Ok(Json(ApiResp::ok(json!(page_out))))
 }
 
-/// 对象集聚合请求体：{ objectSet, aggregation }。
+/// 对象集聚合请求体：{ objectSet, aggregation, subjects? }。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AggregateReq {
     pub object_set: ObjectSet,
     pub aggregation: Aggregation,
+    #[serde(default)]
+    pub subjects: Vec<String>,
 }
 
-/// POST /object-sets/aggregate —— 对象集聚合（Count/GroupCount/GroupSum，seeds cmx-agg）。
+/// POST /object-sets/aggregate —— 对象集聚合（读侧硬门 → Count/GroupCount/GroupSum）。
+/// 硬门把行残差折入后再聚合（受限行不计入统计）；deny / 受控无授权 → 403。
 pub async fn aggregate_object_set(Json(req): Json<AggregateReq>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
+    let subjects = crate::pep::subjects_from(&req.subjects);
+    let terminal = req.object_set.terminal_object_type().unwrap_or("").to_string();
+    let (secured_set, _mask) =
+        crate::pep::enforce_read(&tenant, &subjects, &terminal, req.object_set.clone()).await?;
     let lr = link_resolver();
     let out = object_store()
-        .aggregate(&tenant, &req.object_set, &req.aggregation, &lr)
+        .aggregate(&tenant, &secured_set, &req.aggregation, &lr)
         .await
         .map_err(|e| OntoError::internal_error(format!("聚合失败: {e}")))?;
     Ok(Json(ApiResp::ok(out)))
 }
 
 /// GET /objects/{type}/{pk}/links/{link} —— 便捷 Search-Around（Forward）：取该对象经 link 的相关对象。
-/// 等价于 load(SearchAround(Static([pk]), link, Forward))。
+/// 等价于 load(SearchAround(Static([pk]), link, Forward))；读侧硬门作用在解析出的终端类型上。
 pub async fn search_around(
     Path((object_type, pk, link)): Path<(String, String, String)>,
 ) -> Result<Json<ApiResp<Value>>> {
@@ -222,10 +239,21 @@ pub async fn search_around(
         direction: cmx_onto_model::objectset::LinkDirection::Forward,
     };
     let lr = link_resolver();
-    let page_out = object_store()
-        .load(&tenant, &set, &Page::default(), &lr)
+    // SearchAround 终端类型 = link 的 B 端（Forward）；解析出来喂给硬门做类型级策略匹配。
+    let terminal = lr
+        .ends(&tenant, &link)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("解析关系两端失败: {e}")))?
+        .map(|(_, b)| b)
+        .unwrap_or_default();
+    let subjects = crate::pep::subjects_from(&[]);
+    let (secured_set, mask_plan) =
+        crate::pep::enforce_read(&tenant, &subjects, &terminal, set).await?;
+    let mut page_out = object_store()
+        .load(&tenant, &secured_set, &Page::default(), &lr)
         .await
         .map_err(|e| OntoError::internal_error(format!("Search-Around 失败: {e}")))?;
+    mask_plan.apply(&mut page_out.rows);
     Ok(Json(ApiResp::ok(json!(page_out))))
 }
 

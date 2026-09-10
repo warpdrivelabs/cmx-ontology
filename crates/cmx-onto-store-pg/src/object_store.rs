@@ -326,8 +326,8 @@ impl ObjectStore for PgObjectStore {
         page: &Page,
         links: &dyn LinkResolver,
     ) -> StoreResult<ObjectPage> {
-        let link_ends = resolve_links(tenant, set, links).await?;
-        let mut compiler = Compiler::new(&link_ends);
+        let (link_ends, link_backing) = resolve_links(tenant, set, links).await?;
+        let mut compiler = Compiler::with_backing(&link_ends, &link_backing);
         let compiled = compiler.compile(set)?;
         let t = object_table(&compiled.terminal_type)?;
         // 外层：从终端表取完整行，pk ∈ 编译出的 pk 集合；分页。
@@ -371,8 +371,8 @@ impl ObjectStore for PgObjectStore {
         agg: &Aggregation,
         links: &dyn LinkResolver,
     ) -> StoreResult<Value> {
-        let link_ends = resolve_links(tenant, set, links).await?;
-        let mut compiler = Compiler::new(&link_ends);
+        let (link_ends, link_backing) = resolve_links(tenant, set, links).await?;
+        let mut compiler = Compiler::with_backing(&link_ends, &link_backing);
         let compiled = compiler.compile(set)?;
         let t = object_table(&compiled.terminal_type)?;
         let inner = &compiled.pk_sql;
@@ -427,21 +427,27 @@ impl ObjectStore for PgObjectStore {
     }
 }
 
-/// 预解析对象集里出现的所有关系类型两端（编译 SearchAround 需要）。
+/// 预解析对象集里出现的所有关系类型两端 + backing（编译 SearchAround 需要）。
 async fn resolve_links(
     tenant: &str,
     set: &ObjectSet,
     links: &dyn LinkResolver,
-) -> StoreResult<HashMap<String, cmx_onto_model::LinkEnds>> {
+) -> StoreResult<(
+    HashMap<String, cmx_onto_model::LinkEnds>,
+    HashMap<String, cmx_onto_model::LinkBacking>,
+)> {
     let mut names = Vec::new();
     collect_links(set, &mut names);
-    let mut map = HashMap::new();
+    let mut ends_map = HashMap::new();
+    let mut backing_map = HashMap::new();
     for l in names {
         if let Some(ends) = links.ends(tenant, &l).await? {
-            map.insert(l, ends);
+            ends_map.insert(l.clone(), ends);
+            // 仅对解析出两端的关系取 backing（FK 分派需要；缺省 Edge）。
+            backing_map.insert(l.clone(), links.backing(tenant, &l).await?);
         }
     }
-    Ok(map)
+    Ok((ends_map, backing_map))
 }
 
 fn collect_links(set: &ObjectSet, out: &mut Vec<String>) {

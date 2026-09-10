@@ -12,7 +12,7 @@
 
 use cmx_core::model::cell::DataValue;
 use cmx_onto_model::objectset::*;
-use cmx_onto_model::{LinkEnds, StoreError, StoreResult};
+use cmx_onto_model::{LinkBacking, LinkEnd, LinkEnds, StoreError, StoreResult};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -49,12 +49,30 @@ pub struct Compiled {
 pub struct Compiler<'a> {
     /// 关系 apiName → (A端类型, B端类型)。
     pub link_ends: &'a HashMap<String, LinkEnds>,
+    /// 关系 apiName → 落存储方式（强类型）。`None` 或表中缺项 → 视为 [`LinkBacking::Edge`]。
+    pub link_backing: Option<&'a HashMap<String, LinkBacking>>,
     next_param: usize,
 }
 
 impl<'a> Compiler<'a> {
     pub fn new(link_ends: &'a HashMap<String, LinkEnds>) -> Self {
-        Self { link_ends, next_param: 1 }
+        Self { link_ends, link_backing: None, next_param: 1 }
+    }
+
+    /// 带 backing 分派的构造（读侧 SearchAround 按 backing 编译 FK JOIN / ol_edge）。
+    pub fn with_backing(
+        link_ends: &'a HashMap<String, LinkEnds>,
+        link_backing: &'a HashMap<String, LinkBacking>,
+    ) -> Self {
+        Self { link_ends, link_backing: Some(link_backing), next_param: 1 }
+    }
+
+    /// 取关系的 backing（缺省 Edge）。
+    fn backing_of(&self, link: &str) -> LinkBacking {
+        self.link_backing
+            .and_then(|m| m.get(link))
+            .cloned()
+            .unwrap_or(LinkBacking::Edge)
     }
 
     /// 编译一个对象集为「产出 pk 的子查询」。
@@ -104,24 +122,71 @@ impl<'a> Compiler<'a> {
                 let ends = self.link_ends.get(link).ok_or_else(|| {
                     StoreError::Backend(format!("关系类型 {link} 未定义，无法 Search-Around"))
                 })?;
-                let link_lit = self.bind(params, DataValue::String(link.clone()));
-                // Forward：源在 A 端，经 ol_edge (a_pk ∈ 源) 得 b_pk；终端 = B 端类型。
-                // Reverse：源在 B 端，经 (b_pk ∈ 源) 得 a_pk；终端 = A 端类型。
-                let (from_col, to_col, terminal) = match direction {
-                    LinkDirection::Forward => ("a_pk", "b_pk", ends.1.clone()),
-                    LinkDirection::Reverse => ("b_pk", "a_pk", ends.0.clone()),
+                // Forward：源在 A 端 → 终端 B 端；Reverse：源在 B 端 → 终端 A 端。
+                let (terminal, src_end) = match direction {
+                    LinkDirection::Forward => (ends.1.clone(), LinkEnd::A),
+                    LinkDirection::Reverse => (ends.0.clone(), LinkEnd::B),
                 };
-                Ok((
-                    format!(
-                        "SELECT DISTINCT e.{to_col} AS pk FROM ol_edge e \
-                         WHERE e.link = ${link_lit} AND e.{from_col} IN ({inner})"
-                    ),
-                    terminal,
-                ))
+                let sql = match self.backing_of(link) {
+                    // 外键 backing：走对象表 FK 列 JOIN（不碰 ol_edge）。
+                    LinkBacking::ForeignKey { property, side } => {
+                        self.fk_search_around(&inner, ends, src_end, &property, side)?
+                    }
+                    // Edge / 暂未接的 JoinTable·Intermediary → 回退 ol_edge（保今日语义）。
+                    _ => {
+                        let link_lit = self.bind(params, DataValue::String(link.clone()));
+                        let (from_col, to_col) = match direction {
+                            LinkDirection::Forward => ("a_pk", "b_pk"),
+                            LinkDirection::Reverse => ("b_pk", "a_pk"),
+                        };
+                        format!(
+                            "SELECT DISTINCT e.{to_col} AS pk FROM ol_edge e \
+                             WHERE e.link = ${link_lit} AND e.{from_col} IN ({inner})"
+                        )
+                    }
+                };
+                Ok((sql, terminal))
             }
             ObjectSet::Union { left, right } => self.set_op("UNION", left, right, params),
             ObjectSet::Intersect { left, right } => self.set_op("INTERSECT", left, right, params),
             ObjectSet::Subtract { left, right } => self.set_op("EXCEPT", left, right, params),
+        }
+    }
+
+    /// ForeignKey backing 的 SearchAround → 对象表 FK 列 JOIN（不碰 ol_edge）。
+    ///
+    /// `ends`=(A类型,B类型)；`src_end`=源所在端；`property`=外键属性名；`side`=外键列所在端。
+    /// 两种物理形态：
+    /// - **FK 列在源端表**（`side == src_end`）：源表的 `props->>'property'` 即对端 pk → 直接取列值。
+    /// - **FK 列在终端表**（`side != src_end`）：终端表 `props->>'property'` 指回源 pk → 取终端 pk where FK ∈ 源。
+    fn fk_search_around(
+        &self,
+        inner: &str,
+        ends: &LinkEnds,
+        src_end: LinkEnd,
+        property: &str,
+        side: LinkEnd,
+    ) -> StoreResult<String> {
+        let prop = safe_ident(property)?;
+        let (a_ty, b_ty) = ends;
+        let (src_ty, terminal_ty) = match src_end {
+            LinkEnd::A => (a_ty, b_ty),
+            LinkEnd::B => (b_ty, a_ty),
+        };
+        let src_tbl = object_table(src_ty)?;
+        let terminal_tbl = object_table(terminal_ty)?;
+        if side == src_end {
+            // FK 列在源端表：源表 property 列存对端 pk。取出去重、非空。
+            Ok(format!(
+                "SELECT DISTINCT s.props ->> '{prop}' AS pk FROM {src_tbl} s \
+                 WHERE s.pk IN ({inner}) AND s.props ->> '{prop}' IS NOT NULL"
+            ))
+        } else {
+            // FK 列在终端表：终端表 property 列指回源 pk。取终端 pk where FK ∈ 源集。
+            Ok(format!(
+                "SELECT DISTINCT t.pk AS pk FROM {terminal_tbl} t \
+                 WHERE t.props ->> '{prop}' IN ({inner})"
+            ))
         }
     }
 
@@ -320,6 +385,90 @@ mod tests {
         let out = c.compile(&set).unwrap();
         assert_eq!(out.terminal_type, "Customer"); // Reverse → A 端
         assert!(out.pk_sql.contains("e.a_pk AS pk"));
+    }
+
+    // ───────── FK backing 编译分派（#5） ─────────
+
+    /// customerPlacesOrder：A=Customer, B=Order。FK 列 customerId 落在 Order（B 端）指回 Customer.pk。
+    fn fk_backing_b() -> HashMap<String, LinkBacking> {
+        let mut b = HashMap::new();
+        b.insert(
+            "customerPlacesOrder".to_string(),
+            LinkBacking::ForeignKey { property: "customerId".into(), side: LinkEnd::B },
+        );
+        b
+    }
+
+    #[test]
+    fn fk_forward_column_on_terminal_side() {
+        // Forward：源 Customer(A) → 终端 Order(B)；FK 列在终端(B)。
+        // 取终端表 pk where props->>'customerId' ∈ 源集，绝不碰 ol_edge。
+        let m = ends();
+        let bk = fk_backing_b();
+        let mut c = Compiler::with_backing(&m, &bk);
+        let set = ObjectSet::SearchAround {
+            source: Box::new(ObjectSet::Base { object_type: "Customer".into() }),
+            link: "customerPlacesOrder".into(),
+            direction: LinkDirection::Forward,
+        };
+        let out = c.compile(&set).unwrap();
+        assert_eq!(out.terminal_type, "Order");
+        assert!(!out.pk_sql.contains("ol_edge"), "FK 分派不应碰 ol_edge: {}", out.pk_sql);
+        assert!(out.pk_sql.contains("oo_Order"), "sql: {}", out.pk_sql);
+        assert!(out.pk_sql.contains("props ->> 'customerId' IN"), "sql: {}", out.pk_sql);
+    }
+
+    #[test]
+    fn fk_reverse_column_on_source_side() {
+        // Reverse：源 Order(B) → 终端 Customer(A)；FK 列在源(B)。
+        // 直接取源表 props->>'customerId' 作终端 pk。
+        let m = ends();
+        let bk = fk_backing_b();
+        let mut c = Compiler::with_backing(&m, &bk);
+        let set = ObjectSet::SearchAround {
+            source: Box::new(ObjectSet::Base { object_type: "Order".into() }),
+            link: "customerPlacesOrder".into(),
+            direction: LinkDirection::Reverse,
+        };
+        let out = c.compile(&set).unwrap();
+        assert_eq!(out.terminal_type, "Customer");
+        assert!(!out.pk_sql.contains("ol_edge"), "sql: {}", out.pk_sql);
+        assert!(out.pk_sql.contains("oo_Order"), "源表取列: {}", out.pk_sql);
+        assert!(out.pk_sql.contains("s.props ->> 'customerId' AS pk"), "sql: {}", out.pk_sql);
+    }
+
+    #[test]
+    fn edge_backing_still_uses_ol_edge() {
+        // 显式 Edge backing（或缺省）→ 仍走 ol_edge（不回归）。
+        let m = ends();
+        let mut bk = HashMap::new();
+        bk.insert("customerPlacesOrder".to_string(), LinkBacking::Edge);
+        let mut c = Compiler::with_backing(&m, &bk);
+        let set = ObjectSet::SearchAround {
+            source: Box::new(ObjectSet::Base { object_type: "Customer".into() }),
+            link: "customerPlacesOrder".into(),
+            direction: LinkDirection::Forward,
+        };
+        let out = c.compile(&set).unwrap();
+        assert!(out.pk_sql.contains("ol_edge"), "Edge 应走 ol_edge: {}", out.pk_sql);
+    }
+
+    #[test]
+    fn fk_injection_guarded_on_property() {
+        // FK property 经 safe_ident 校验：非法列名（注入企图）编译期拒。
+        let m = ends();
+        let mut bk = HashMap::new();
+        bk.insert(
+            "customerPlacesOrder".to_string(),
+            LinkBacking::ForeignKey { property: "x; DROP TABLE oo_Order".into(), side: LinkEnd::B },
+        );
+        let mut c = Compiler::with_backing(&m, &bk);
+        let set = ObjectSet::SearchAround {
+            source: Box::new(ObjectSet::Base { object_type: "Customer".into() }),
+            link: "customerPlacesOrder".into(),
+            direction: LinkDirection::Forward,
+        };
+        assert!(c.compile(&set).is_err());
     }
 
     #[test]

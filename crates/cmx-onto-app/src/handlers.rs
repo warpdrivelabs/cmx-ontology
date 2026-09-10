@@ -38,16 +38,51 @@ pub async fn get_object_type(Path(api_name): Path<String>) -> Result<Json<ApiRes
     Ok(Json(ApiResp::ok(json!(def))))
 }
 
-/// POST /object-types —— upsert 对象类型（结构校验后落库）。
+/// POST /object-types —— upsert 对象类型（结构校验 + 接口契约校验后落库）。
 pub async fn save_object_type(Json(def): Json<ObjectTypeDef>) -> Result<Json<ApiResp<Value>>> {
     def.validate()
         .map_err(|e| OntoError::business_error(format!("对象类型非法: {e}")))?;
     let tenant = current_tenant();
+    // 接口强校验（#4）：仅当声明了 implements 才逐个装载接口 + 其要求的共享属性定义，
+    // 交内核纯函数 validate_implements 校验"实现者具备接口要求的共享属性且类型匹配"。
+    if !def.implements.is_empty() {
+        validate_object_implements(&tenant, &def).await?;
+    }
     store()
         .upsert_object_type(&tenant, &def)
         .await
         .map_err(|e| OntoError::internal_error(format!("保存对象类型失败: {e}")))?;
     Ok(Json(ApiResp::ok(json!({ "apiName": def.api_name, "saved": true }))))
+}
+
+/// 装载 `def.implements` 涉及的接口与共享属性定义，调用内核 [`validate_implements`]。
+/// 缺失的接口/共享属性不入切片——由 `validate_implements` 报"未定义"，语义一致。
+async fn validate_object_implements(tenant: &str, def: &ObjectTypeDef) -> Result<()> {
+    let mut ifaces = Vec::new();
+    let mut shared: Vec<SharedPropertyTypeDef> = Vec::new();
+    for iface_name in &def.implements {
+        if let Some(iface) = store()
+            .get_interface(tenant, iface_name)
+            .await
+            .map_err(|e| OntoError::internal_error(format!("装载接口失败: {e}")))?
+        {
+            for spt_name in &iface.properties {
+                if shared.iter().any(|s: &SharedPropertyTypeDef| &s.api_name == spt_name) {
+                    continue;
+                }
+                if let Some(spt) = store()
+                    .get_shared_property(tenant, spt_name)
+                    .await
+                    .map_err(|e| OntoError::internal_error(format!("装载共享属性失败: {e}")))?
+                {
+                    shared.push(spt);
+                }
+            }
+            ifaces.push(iface);
+        }
+    }
+    cmx_onto_model::validate_implements(def, &ifaces, &shared)
+        .map_err(|e| OntoError::business_error(format!("接口契约校验未通过: {e}")))
 }
 
 /// POST /object-types/validate —— 仅结构校验（不落库）。

@@ -3,6 +3,7 @@
 //! 与 [`OntologyStore`](crate::OntologyStore)（定义层）分离：本契约管**对象运行时**（oo_*/ol_*）。
 //! PG 实现见 cmx-onto-store-pg::object_store。
 
+use crate::def::LinkBacking;
 use crate::objectset::*;
 use crate::StoreResult;
 use async_trait::async_trait;
@@ -71,4 +72,10 @@ pub trait ObjectStore: Send + Sync {
 pub trait LinkResolver: Send + Sync {
     /// 关系 apiName → (A端对象类型, B端对象类型)；不存在则 None。
     async fn ends(&self, tenant: &str, link: &str) -> StoreResult<Option<LinkEnds>>;
+
+    /// 关系 apiName → 落存储方式（强类型）。默认 [`LinkBacking::Edge`]——
+    /// 未 override 的实现保持原生 ol_edge 语义（向后兼容）。
+    async fn backing(&self, _tenant: &str, _link: &str) -> StoreResult<LinkBacking> {
+        Ok(LinkBacking::Edge)
+    }
 }

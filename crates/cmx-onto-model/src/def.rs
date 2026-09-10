@@ -213,6 +213,50 @@ impl ObjectTypeDef {
     }
 }
 
+/// 校验对象类型是否满足其声明接口的共享属性契约。
+///
+/// 规则：`def.implements` 中每个接口的 `properties`（共享属性 apiName 列表）在
+/// `def.properties` 中都必须存在一个 `p.shared_property == Some(spt_api_name)`
+/// 且 `p.base_type == spt.base_type` 的属性；否则返回 `Err(Definition(...))`。
+///
+/// 调用方（`save_object_type` handler）负责预加载接口和共享属性定义，保证本函数零 IO。
+pub fn validate_implements(
+    def: &ObjectTypeDef,
+    ifaces: &[InterfaceDef],
+    shared: &[SharedPropertyTypeDef],
+) -> crate::Result<()> {
+    for iface_name in &def.implements {
+        let iface = ifaces
+            .iter()
+            .find(|i| &i.api_name == iface_name)
+            .ok_or_else(|| {
+                crate::Error::Definition(format!(
+                    "对象类型「{}」声明实现了接口「{iface_name}」，但该接口未定义",
+                    def.api_name
+                ))
+            })?;
+        for spt_name in &iface.properties {
+            let spt = shared.iter().find(|s| &s.api_name == spt_name).ok_or_else(|| {
+                crate::Error::Definition(format!(
+                    "接口「{iface_name}」要求共享属性「{spt_name}」，但该共享属性未定义"
+                ))
+            })?;
+            // 对象类型必须有 shared_property == spt_name 且 base_type 完全匹配的属性。
+            let satisfied = def
+                .properties
+                .iter()
+                .any(|p| p.shared_property.as_deref() == Some(spt_name.as_str()) && p.base_type == spt.base_type);
+            if !satisfied {
+                return Err(crate::Error::Definition(format!(
+                    "对象类型「{}」未满足接口「{iface_name}」的契约：缺少引用共享属性「{spt_name}」（baseType={:?}）的属性",
+                    def.api_name, spt.base_type
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 // ───────────────────────────── 关系类型 ─────────────────────────────
 
 /// 关系基数。
@@ -223,6 +267,44 @@ pub enum LinkCardinality {
     #[default]
     OneToMany,
     ManyToMany,
+}
+
+/// 关系的一端（A / B）。用于 ForeignKey backing 标记"外键列落在哪一端的对象表"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum LinkEnd {
+    #[default]
+    A,
+    B,
+}
+
+/// 关系落存储方式（强类型；对标 Palantir link datasource backing）。
+///
+/// 序列化按 `kind` 标签分派（camelCase）：
+/// - `{"kind":"edge"}` —— 原生 `ol_edge` 单表（默认；写入 put_link/delete_link 走此）。
+/// - `{"kind":"foreignKey","property":"customerId","side":"b"}` —— 外键列落在 `side` 端对象表的
+///   `props->>'property'`，指向对端 pk（本轮 SearchAround 读侧按此编译 FK JOIN；写侧仍兜底 ol_edge）。
+/// - `{"kind":"joinTable",...}` / `{"kind":"intermediary",...}` —— 声明占位，编译暂回退 ol_edge（下一轮接）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum LinkBacking {
+    /// 原生边表（默认）。
+    #[default]
+    Edge,
+    /// 外键列 backing：`side` 端对象表的 `property` 列存对端 pk。
+    ForeignKey { property: String, #[serde(default)] side: LinkEnd },
+    /// 连接表 backing（多对多；两列外键）——声明占位，编译暂回退 Edge。
+    JoinTable {
+        #[serde(default)] table: String,
+        #[serde(default)] left_column: String,
+        #[serde(default)] right_column: String,
+    },
+    /// 中间对象类型 backing——声明占位，编译暂回退 Edge。
+    Intermediary {
+        #[serde(default)] object_type: String,
+        #[serde(default)] left_property: String,
+        #[serde(default)] right_property: String,
+    },
 }
 
 /// 关系类型定义（对象类型间的关系；Search-Around 的路径）。
@@ -254,6 +336,14 @@ pub struct LinkTypeDef {
 }
 
 impl LinkTypeDef {
+    /// 解析 `backing`（裸 JSON）为强类型 [`LinkBacking`]；空/非法/无法识别 → `Edge` 兜底（向后兼容）。
+    pub fn backing_parsed(&self) -> LinkBacking {
+        if self.backing.is_null() {
+            return LinkBacking::Edge;
+        }
+        serde_json::from_value(self.backing.clone()).unwrap_or(LinkBacking::Edge)
+    }
+
     pub fn validate(&self) -> crate::Result<()> {
         if !is_valid_api_name(&self.api_name) {
             return Err(crate::Error::Definition(format!(
@@ -265,6 +355,19 @@ impl LinkTypeDef {
             return Err(crate::Error::Definition(
                 "关系类型两端对象类型（objectTypeA / objectTypeB）不能为空".into(),
             ));
+        }
+        // backing 若指定，须能解析且约束合法：ForeignKey 的 property 非空且为合法标识符。
+        if let LinkBacking::ForeignKey { property, .. } = self.backing_parsed() {
+            if property.trim().is_empty() {
+                return Err(crate::Error::Definition(
+                    "ForeignKey backing 的 property（外键属性名）不能为空".into(),
+                ));
+            }
+            if !is_valid_api_name(&property) {
+                return Err(crate::Error::Definition(format!(
+                    "ForeignKey backing 的 property「{property}」非法（须字母/下划线开头，仅字母数字下划线）"
+                )));
+            }
         }
         Ok(())
     }

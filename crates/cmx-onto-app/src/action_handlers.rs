@@ -66,18 +66,22 @@ pub async fn execute_action(
         )));
     }
     // 4.5) 写侧 PEP（O6 策略 deny_actions）：主体对该动作/目标对象类型是否被拒。
+    //      fail-closed：无法确定主体 → 拒（403）；命中 deny → 403（原为 business_error/200，收口为硬门）。
     let subjects = subjects_of(&req.subjects);
-    if !subjects.is_empty() {
-        let target_types = edit_object_types(&edits);
-        if let Some(denier) = PolicyStore::new(crate::tenancy::current_db_id())
-            .check_action_permission(&target_types, &api_name, &subjects)
-            .await
-            .map_err(|e| OntoError::internal_error(format!("权限检查失败: {e}")))?
-        {
-            return Err(OntoError::business_error(format!(
-                "动作 {api_name} 被策略「{denier}」拒绝执行（写侧 PEP）"
-            )));
-        }
+    if subjects.is_empty() {
+        return Err(OntoError::forbidden(format!(
+            "动作 {api_name} 无法确定执行主体，拒绝执行（写侧硬门）"
+        )));
+    }
+    let target_types = edit_object_types(&edits);
+    if let Some(denier) = PolicyStore::new(crate::tenancy::current_db_id())
+        .check_action_permission(&target_types, &api_name, &subjects)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("权限检查失败: {e}")))?
+    {
+        return Err(OntoError::forbidden(format!(
+            "动作 {api_name} 被策略「{denier}」拒绝执行（写侧 PEP）"
+        )));
     }
     // 5) 原子执行（或 dry-run 预演），落审计 + Outbox
     let outcome = action_executor()

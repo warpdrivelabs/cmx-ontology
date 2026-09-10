@@ -22,6 +22,8 @@ cmx-service-base = { workspace = true, default-features = false }
 cmx-utils = { workspace = true }
 # 引擎应用层横切件：tenant 上下文 / auth 中间件 / resp 信封唯一真源
 cmx-engine-kit = { workspace = true }
+# O6 读侧硬门：零 IO 脱敏内核（apply_masks + MaskType::Hide）
+cmx-dataauth-core = { workspace = true }
 
 axum = { workspace = true }
 serde = { workspace = true }
