@@ -38,6 +38,29 @@ pub async fn get_object_type(Path(api_name): Path<String>) -> Result<Json<ApiRes
     Ok(Json(ApiResp::ok(json!(def))))
 }
 
+/// POST /object-types/batch —— 按 apiName 列表批量取完整定义（设计器首屏装载用）。
+///
+/// 单 SQL `= ANY($1)` 把 N 次远端往返折叠为 1 次（远端库每往返 ~190ms，44 类型逐个拉
+/// ≈ 8.7s 的主体）。不存在的 apiName 静默跳过（清单驱动下的批量装载容忍并发删除）。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObjectTypesBatchReq {
+    pub api_names: Vec<String>,
+}
+pub async fn get_object_types_batch(
+    Json(req): Json<ObjectTypesBatchReq>,
+) -> Result<Json<ApiResp<Value>>> {
+    if req.api_names.len() > 500 {
+        return Err(OntoError::bad_request("apiNames 数量超限（≤500）"));
+    }
+    let tenant = current_tenant();
+    let defs = store()
+        .get_object_types_batch(&tenant, &req.api_names)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("批量装载对象类型失败: {e}")))?;
+    Ok(Json(ApiResp::ok(json!(defs))))
+}
+
 /// POST /object-types —— upsert 对象类型（结构校验 + 接口契约校验后落库）。
 ///
 /// B0 乐观锁：`version > 0` 走原子条件更新（跨标签页/久置缓冲的过期保存得 409）；

@@ -69,6 +69,8 @@ where
             get(handlers::list_object_types).post(handlers::save_object_type),
         )
         .route("/object-types/validate", post(handlers::validate_object_type))
+        // D15：批量详情（设计器首屏装载；静态段 + POST + JSON body，符合新接口规范）。
+        .route("/object-types/batch", post(handlers::get_object_types_batch))
         .route(
             "/object-types/{api_name}",
             get(handlers::get_object_type).delete(handlers::delete_object_type),

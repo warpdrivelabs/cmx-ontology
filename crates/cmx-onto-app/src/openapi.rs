@@ -37,6 +37,7 @@ pub async fn openapi_json() -> Json<Value> {
         "paths": {
             "/object-types": p("列表 / upsert 对象类型", &["get", "post"], "建模"),
             "/object-types/validate": p("仅校验对象类型", &["post"], "建模"),
+            "/object-types/batch": p("按 apiNames 批量取对象类型完整定义", &["post"], "建模"),
             "/object-types/{apiName}": p("详情 / 删除对象类型", &["get", "delete"], "建模"),
             "/link-types": p("列表 / upsert 关系类型", &["get", "post"], "建模"),
             "/link-types/{apiName}": p("详情 / 删除关系类型", &["get", "delete"], "建模"),

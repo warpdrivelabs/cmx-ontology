@@ -63,6 +63,39 @@ impl PgOntologyStore {
             .map_err(|e| StoreError::Backend(format!("查询失败: {e}")))
     }
 
+    // ─────────────────── D15 批量详情（inherent 方法） ───────────────────
+
+    /// 按 apiName 列表批量取对象类型完整定义（单 SQL `= ANY($1)`）。
+    ///
+    /// 设计器首屏装载要对清单里每个对象类型各拉一次详情（44 类型 = 44 请求 × 远端库
+    /// ~190ms 往返 ≈ 8.7s 的主体）；本方法把 N 次往返折叠为 1 次。返回的 Vec 不保证
+    /// 与入参同序（按库内存储序），调用方按 api_name 自行对位；不存在的 apiName 静默
+    /// 跳过（与既有 404 语义不同——清单驱动下的批量装载容忍并发删除）。
+    pub async fn get_object_types_batch(
+        &self,
+        _tenant: &str,
+        api_names: &[String],
+    ) -> StoreResult<Vec<ObjectTypeDef>> {
+        if api_names.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ds = self
+            .query(
+                "SELECT api_name, display_name, description, icon, color, primary_key, title_property, \
+                 status, properties, implements, dam, doc_type, datasource, cmx_origin, version \
+                 FROM om_object_type WHERE api_name = ANY($1)",
+                vec![DataValue::Array(
+                    api_names.iter().map(|n| DataValue::String(n.clone())).collect(),
+                )],
+                "om_object_type_batch",
+            )
+            .await?;
+        let s = ds.schema.as_ref();
+        ds.iter()
+            .map(|row| object_def_from_row(row, s))
+            .collect::<StoreResult<Vec<_>>>()
+    }
+
     // ─────────────────── B0 乐观锁保存（原子） ───────────────────
 
     /// 带乐观锁的对象类型 upsert（B0，单语句原子，无 TOCTOU）：
@@ -368,32 +401,7 @@ impl OntologyStore for PgOntologyStore {
         let Some(row) = ds.iter().next() else {
             return Ok(None);
         };
-        let s = ds.schema.as_ref();
-        let properties: Vec<PropertyTypeDef> = get_json(row, s, "properties")
-            .ok()
-            .and_then(|v| serde_json::from_value(v).ok())
-            .unwrap_or_default();
-        let implements: Vec<String> = get_json(row, s, "implements")
-            .ok()
-            .and_then(|v| serde_json::from_value(v).ok())
-            .unwrap_or_default();
-        Ok(Some(ObjectTypeDef {
-            api_name: get_string(row, s, "api_name")?,
-            display_name: get_opt_string(row, s, "display_name").unwrap_or_default(),
-            description: get_opt_string(row, s, "description").unwrap_or_default(),
-            icon: get_opt_string(row, s, "icon").unwrap_or_default(),
-            color: get_opt_string(row, s, "color").unwrap_or_default(),
-            primary_key: get_opt_string(row, s, "primary_key").unwrap_or_default(),
-            title_property: get_opt_string(row, s, "title_property").unwrap_or_default(),
-            status: parse_status(row, s),
-            properties,
-            implements,
-            dam: get_opt_json(row, s, "dam").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
-            doc_type: get_opt_json(row, s, "doc_type").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
-            datasource: get_opt_json(row, s, "datasource"),
-            cmx_origin: get_opt_json(row, s, "cmx_origin"),
-            version: get_i64(row, s, "version") as u32,
-        }))
+        Ok(Some(object_def_from_row(row, ds.schema.as_ref())?))
     }
 
     async fn list_object_types(&self, _tenant: &str) -> StoreResult<Vec<ObjectTypeMeta>> {
@@ -844,18 +852,59 @@ impl OntologyStore for PgOntologyStore {
     // ─────────────────────────── 清单 ───────────────────────────
 
     async fn manifest(&self, tenant: &str) -> StoreResult<OntologyManifest> {
+        // 六清单并行（try_join!）：远端库每往返 ~190ms，顺序执行 6×RTT ≈ 1.6s（实测首屏
+        // 装载的最大单点）；并行后墙钟 ≈ 单查询耗时。连接池默认多连接，六查询互不争用。
+        let (object_types, link_types, interfaces, shared_properties, action_types, functions) =
+            tokio::try_join!(
+                self.list_object_types(tenant),
+                self.list_link_types(tenant),
+                self.list_interfaces(tenant),
+                self.list_shared_properties(tenant),
+                self.list_action_types(tenant),
+                self.list_functions(tenant),
+            )?;
         Ok(OntologyManifest {
-            object_types: self.list_object_types(tenant).await?,
-            link_types: self.list_link_types(tenant).await?,
-            interfaces: self.list_interfaces(tenant).await?,
-            shared_properties: self.list_shared_properties(tenant).await?,
-            action_types: self.list_action_types(tenant).await?,
-            functions: self.list_functions(tenant).await?,
+            object_types,
+            link_types,
+            interfaces,
+            shared_properties,
+            action_types,
+            functions,
         })
     }
 }
 
 // ————————————————————————— 取值 / 转换助手 —————————————————————————
+
+/// om_object_type 详情行 → `ObjectTypeDef`（单查 / 批量共用；列清单见
+/// `get_object_type` / `get_object_types_batch` 的同款 SELECT）。
+fn object_def_from_row(row: &Row, s: &Schema) -> StoreResult<ObjectTypeDef> {
+    let properties: Vec<PropertyTypeDef> = get_json(row, s, "properties")
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+    let implements: Vec<String> = get_json(row, s, "implements")
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+    Ok(ObjectTypeDef {
+        api_name: get_string(row, s, "api_name")?,
+        display_name: get_opt_string(row, s, "display_name").unwrap_or_default(),
+        description: get_opt_string(row, s, "description").unwrap_or_default(),
+        icon: get_opt_string(row, s, "icon").unwrap_or_default(),
+        color: get_opt_string(row, s, "color").unwrap_or_default(),
+        primary_key: get_opt_string(row, s, "primary_key").unwrap_or_default(),
+        title_property: get_opt_string(row, s, "title_property").unwrap_or_default(),
+        status: parse_status(row, s),
+        properties,
+        implements,
+        dam: get_opt_json(row, s, "dam").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
+        doc_type: get_opt_json(row, s, "doc_type").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
+        datasource: get_opt_json(row, s, "datasource"),
+        cmx_origin: get_opt_json(row, s, "cmx_origin"),
+        version: get_i64(row, s, "version") as u32,
+    })
+}
 
 /// 由 `SELECT api_name, display_name, updated_at` 的 DataSet 还原通用清单项。
 fn simple_metas(ds: &DataSet) -> Vec<SimpleTypeMeta> {
