@@ -9,6 +9,7 @@ pub mod link_resolver;
 pub mod object_store;
 pub mod policy_store;
 pub mod store;
+pub mod view_store;
 
 pub use action_exec::{ActionExecutor, ApplyOutcome};
 pub use funnel_store::FunnelStore;

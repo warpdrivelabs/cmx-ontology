@@ -8,6 +8,7 @@ pub mod error;
 pub mod object_store;
 pub mod objectset;
 pub mod store;
+pub mod view;
 
 pub mod action;
 pub mod feel;
@@ -23,6 +24,7 @@ pub use error::{Error, Result, StoreError, StoreResult};
 pub use object_store::{LinkEnds, LinkResolver, ObjectStore};
 pub use objectset::*;
 pub use store::OntologyStore;
+pub use view::{SceneViewDef, SceneViewMeta, ViewMembers, ViewSource};
 pub use action::{resolve_edits, resolve_side_effects, validate_params, run_validations, SideEffect, ValidationFailure, ObjectEdit};
 pub use feel::{eval_expression, eval_predicate, FeelError};
 pub use function::{evaluate as evaluate_function, input_specs, check_inputs, InputSpec, FunctionError};
@@ -350,6 +352,41 @@ mod tests {
         assert_eq!(serde_json::to_value(PropertyBaseType::MediaReference).unwrap(), json!("mediaReference"));
         assert_eq!(serde_json::to_value(FunctionRuntime::Feel).unwrap(), json!("feel"));
         assert_eq!(serde_json::to_value(FunctionKind::DerivedProperty).unwrap(), json!("derivedProperty"));
+    }
+
+    // ───────── 场景视图（om_view）校验 ─────────
+
+    #[test]
+    fn view_auto_requires_prefix_and_no_members() {
+        let v = SceneViewDef {
+            api_name: "auto:采购域".into(),
+            source: ViewSource::Auto,
+            members: ViewMembers { objects: vec!["CxOrder".into()], ..Default::default() },
+            ..Default::default()
+        };
+        let e = v.validate().unwrap_err().to_string();
+        assert!(e.contains("不物化"), "auto 视图不得物化成员: {e}");
+        let v2 = SceneViewDef { api_name: "noPrefix".into(), source: ViewSource::Auto, ..Default::default() };
+        assert!(v2.validate().is_err());
+    }
+
+    #[test]
+    fn view_manual_allows_auto_prefix_for_conversion() {
+        // auto→manual 转换保留原名（域默认视图固化语义）：manual 允许 auto: 前缀。
+        let v = SceneViewDef {
+            api_name: "auto:hr".into(),
+            source: ViewSource::Manual,
+            members: ViewMembers { objects: vec!["DgCand1".into()], ..Default::default() },
+            ..Default::default()
+        };
+        assert!(v.validate().is_ok());
+        let ok = SceneViewDef {
+            api_name: "procure_scene".into(),
+            source: ViewSource::Manual,
+            members: ViewMembers { objects: vec!["A".into()], interfaces: vec!["I".into()] },
+            ..Default::default()
+        };
+        assert!(ok.validate().is_ok());
     }
 
     #[test]

@@ -570,6 +570,12 @@ pub struct LinkTypeMeta {
     pub status: TypeStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<DateTime<Utc>>,
+    /// A 端对象类型的 DAM（清单富化 A3：跨域关系治理；对象被删/不存在时为 None）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dam_a: Option<DamRef>,
+    /// B 端对象类型的 DAM（同上）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dam_b: Option<DamRef>,
 }
 
 /// 通用类型清单项（接口/共享属性/动作/函数）。
@@ -580,6 +586,12 @@ pub struct SimpleTypeMeta {
     pub display_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<DateTime<Utc>>,
+    /// 实现者清单（清单富化 A3，仅接口填充；其余四类恒 None）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implements_by: Option<Vec<String>>,
+    /// 继承的父接口链（清单富化 A3，仅接口填充；其余四类恒 None）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extends: Option<Vec<String>>,
 }
 
 /// 本体全量清单（建模台/OSDK 生成的输入）。

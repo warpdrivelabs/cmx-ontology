@@ -17,15 +17,8 @@ use serde_json::{json, Value};
 
 // ───────────────────────────── 对象类型 ─────────────────────────────
 
-/// GET /object-types —— 对象类型清单。
-pub async fn list_object_types() -> Result<Json<ApiResp<Value>>> {
-    let tenant = current_tenant();
-    let metas = store()
-        .list_object_types(&tenant)
-        .await
-        .map_err(|e| OntoError::internal_error(format!("列出对象类型失败: {e}")))?;
-    Ok(Json(ApiResp::ok(json!(metas))))
-}
+// GET /object-types（清单 + A2 q/dam/page/size 扩展）已迁至 view_handlers.rs——
+// 旧设计器不传参仍得全量数组（零破坏），新页面目录表格走分页信封。
 
 /// GET /object-types/{apiName} —— 对象类型详情（含完整属性）。
 pub async fn get_object_type(Path(api_name): Path<String>) -> Result<Json<ApiResp<Value>>> {

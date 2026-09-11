@@ -175,6 +175,21 @@ pub const DDL_STATEMENTS: &[&str] = &[
         created_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
     )"#,
     "CREATE INDEX IF NOT EXISTS idx_oo_quarantine_type ON oo_quarantine (object_type, id)",
+    // —— 场景视图（本体工作室 P1；方案 §2.1/§七）——
+    // auto 视图成员读时按 DAM 现算（members 恒空数组，仅元数据+布局可落行）；manual 物化成员。
+    r#"CREATE TABLE IF NOT EXISTS om_view (
+        api_name        VARCHAR(128) PRIMARY KEY,
+        display_name    VARCHAR(256) NOT NULL DEFAULT '',
+        description     TEXT         NOT NULL DEFAULT '',
+        dam             JSONB        NOT NULL DEFAULT '{}',
+        members         JSONB        NOT NULL DEFAULT '{"objects":[],"interfaces":[]}',
+        source          VARCHAR(16)  NOT NULL DEFAULT 'manual',
+        layout          JSONB        NOT NULL DEFAULT '{}',
+        version         INTEGER      NOT NULL DEFAULT 0,
+        created_at      TIMESTAMPTZ  NOT NULL,
+        updated_at      TIMESTAMPTZ  NOT NULL
+    )"#,
+    "CREATE INDEX IF NOT EXISTS idx_om_view_source ON om_view (source)",
 ];
 
 /// 表 / 列注释（COMMENT ON 幂等覆盖）。随 `DDL_STATEMENTS` 一起在启动钩子重放。
@@ -319,4 +334,16 @@ pub const DDL_COMMENTS: &[&str] = &[
     "COMMENT ON COLUMN oo_quarantine.violations IS '校验违规明细 jsonb（缺失必填/类型不符等）'",
     "COMMENT ON COLUMN oo_quarantine.source IS '来源标识（默认 funnel）'",
     "COMMENT ON COLUMN oo_quarantine.created_at IS '入区时间'",
+    // —— 场景视图 ——
+    "COMMENT ON TABLE om_view IS '场景视图（本体工作室）：场景是过滤器/透镜不是容器——只存成员引用与布局，元素定义仍在 om_* 全局唯一'",
+    "COMMENT ON COLUMN om_view.api_name IS '视图稳定名（manual 由维护者命名；auto 域默认视图固定 auto:<domain> 前缀）'",
+    "COMMENT ON COLUMN om_view.display_name IS '显示名'",
+    "COMMENT ON COLUMN om_view.description IS '描述'",
+    "COMMENT ON COLUMN om_view.dam IS '视图自身 DAM 归属 jsonb（展示分组用，可空）'",
+    "COMMENT ON COLUMN om_view.members IS '成员引用 jsonb（{objects:[],interfaces:[]}；仅 manual 物化，auto 恒空——成员读时按 DAM 现算）'",
+    "COMMENT ON COLUMN om_view.source IS '视图来源：auto（域默认视图，读时派生）/ manual（手动场景，快照语义）'",
+    "COMMENT ON COLUMN om_view.layout IS '画布布局 jsonb（组件 _layout 形状；LWW 直写不占乐观锁，发布/保存互不覆盖）'",
+    "COMMENT ON COLUMN om_view.version IS '乐观锁版本号（每次保存 +1；layout 单列更新不递增）'",
+    "COMMENT ON COLUMN om_view.created_at IS '创建时间'",
+    "COMMENT ON COLUMN om_view.updated_at IS '最近更新时间'",
 ];

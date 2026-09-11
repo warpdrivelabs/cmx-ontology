@@ -1,0 +1,547 @@
+//! 场景视图 + 成员级装载 handler（本体工作室 P1；方案 §2.1/§5.1/§七）。
+//!
+//! - `GET /views`：行集 + **auto 虚拟条目读时派生**（manifest 按 DAM 域聚合现算，不落行；
+//!   未分组伪域不播种——防"一锅炖收编全部无 DAM 类型"）。
+//! - `POST /views` / `POST /views/remove` / `POST /views/layout`：场景 CRUD（B0 乐观锁；
+//!   layout 单列 LWW 直写，auto 视图拖布局时按需落行 meta+layout+source=auto、永不落 members）。
+//!   P1 直写 live om_view；P2 起两端点切草稿 views 段（方案 §2.4 视图写轨对齐）。
+//! - `GET /graph?view=X`：成员级装载一条请求到位（对象全量定义+相关边+实现接口+共享属性+
+//!   跨场景关系角标数据 → 组件 spec，消 N+1）。
+//! - `POST /shared-properties/batch`：A1 批量详情（ids≤500，`{items,errors}`）。
+//! - `GET /object-types` 扩展 `q/dam/page/size`（A2，仅目录表格使用；不传参 = 既有全量语义零变化）。
+
+use crate::engine::store;
+use crate::resp::{ApiResp, OntoError, Result};
+use crate::tenant::current_tenant;
+use axum::extract::Query;
+use axum::Json;
+use cmx_onto_model::{
+    ObjectTypeDef, PropertyBaseType, PropertyTypeDef, SceneViewDef, SceneViewMeta, ViewSource,
+    OntologyStore,
+};
+use serde::Deserialize;
+use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet};
+
+// ───────────────────────────── 视图 CRUD ─────────────────────────────
+
+/// GET /views —— 场景视图清单（行集 + auto 域默认视图读时派生合并）。
+pub async fn list_views() -> Result<Json<ApiResp<Value>>> {
+    let tenant = current_tenant();
+    let rows = store()
+        .list_views(&tenant)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("列出场景视图失败: {e}")))?;
+    let metas = store()
+        .list_object_types(&tenant)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("装载对象清单失败: {e}")))?;
+
+    // DAM 域聚合现算（auto 播种口径：manifest 读时派生；未分组 domain 为空 → 不播种）。
+    let mut domain_counts: BTreeMap<String, u32> = BTreeMap::new();
+    for m in &metas {
+        let d = m.dam.domain.trim();
+        if d.is_empty() {
+            continue;
+        }
+        *domain_counts.entry(d.to_string()).or_insert(0) += 1;
+    }
+
+    let mut out: Vec<Value> = Vec::new();
+    // 全部已落行名占用集合：manual 固化行占用 auto:<domain> 名后，该域不再派生虚拟条目。
+    let mut seen_names: BTreeSet<String> = BTreeSet::new();
+    for m in rows {
+        let virtual_view = false;
+        let api = m.api_name.clone();
+        seen_names.insert(api.clone());
+        if m.source == ViewSource::Auto {
+            // auto 行（仅元数据+布局落行）的成员数也按域现算（members 恒空）。
+            let key = api.strip_prefix("auto:").unwrap_or(&api).to_string();
+            let mut v = meta_to_value(&m, virtual_view);
+            v["objectCount"] = json!(domain_counts.get(&key).copied().unwrap_or(0));
+            out.push(v);
+        } else {
+            out.push(meta_to_value(&m, virtual_view));
+        }
+    }
+    // 域有类型但无行 → 虚拟条目（域消失 → 自然消失；布局保存/转手动时才落行）。
+    for (domain, count) in domain_counts {
+        let api = format!("auto:{domain}");
+        if seen_names.contains(&api) {
+            continue;
+        }
+        out.push(json!({
+            "apiName": api,
+            "displayName": format!("{domain}（域默认）"),
+            "description": "按 DAM 域读时派生的默认场景（成员随域自动跟随；拖动布局或转为手动场景后固化）".to_string(),
+            "dam": { "domain": domain },
+            "source": "auto",
+            "objectCount": count,
+            "interfaceCount": 0,
+            "virtual": true,
+            "version": 0,
+            "members": { "objects": [], "interfaces": [] },
+        }));
+    }
+    Ok(Json(ApiResp::ok(json!(out))))
+}
+
+fn meta_to_value(m: &SceneViewMeta, _virtual_view: bool) -> Value {
+    // virtual_view 经 serde rename = "virtual" 输出，与虚拟条目手写 json! 的键一致。
+    serde_json::to_value(m).unwrap_or(Value::Null)
+}
+
+/// POST /views 请求体（偏序容忍）。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SaveViewReq {
+    pub api_name: String,
+    pub display_name: String,
+    pub description: String,
+    pub dam: cmx_onto_model::DamRef,
+    pub members: cmx_onto_model::ViewMembers,
+    pub source: ViewSource,
+    pub layout: Value,
+    pub version: u32,
+}
+impl Default for SaveViewReq {
+    fn default() -> Self {
+        Self {
+            api_name: String::new(),
+            display_name: String::new(),
+            description: String::new(),
+            dam: Default::default(),
+            members: Default::default(),
+            source: ViewSource::Manual,
+            layout: Value::Null,
+            version: 0,
+        }
+    }
+}
+
+/// POST /views —— upsert 场景视图（新建/重命名/成员编辑/转 manual；B0 乐观锁）。
+pub async fn save_view(Json(req): Json<SaveViewReq>) -> Result<Json<ApiResp<Value>>> {
+    let def = SceneViewDef {
+        api_name: req.api_name,
+        display_name: req.display_name,
+        description: req.description,
+        dam: req.dam,
+        members: req.members,
+        source: req.source,
+        layout: if req.layout.is_null() { json!({}) } else { req.layout },
+        version: req.version,
+    };
+    def.validate()
+        .map_err(|e| OntoError::business_error(format!("场景视图非法: {e}")))?;
+    let tenant = current_tenant();
+    let version = store()
+        .upsert_view_locked(&tenant, &def)
+        .await
+        .map_err(|e| match e {
+            cmx_onto_model::StoreError::Conflict(m) => OntoError::conflict(m),
+            cmx_onto_model::StoreError::NotFound(m) => OntoError::not_found(m),
+            other => OntoError::internal_error(format!("保存场景视图失败: {other}")),
+        })?;
+    Ok(Json(ApiResp::ok(
+        json!({ "apiName": def.api_name, "saved": true, "version": version }),
+    )))
+}
+
+/// POST /views/remove 请求体。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveViewReq {
+    pub api_name: String,
+}
+
+/// POST /views/remove —— 删除场景（二次确认由前端承担；auto 虚拟条目无行可删 → deleted=false）。
+pub async fn remove_view(Json(req): Json<RemoveViewReq>) -> Result<Json<ApiResp<Value>>> {
+    let tenant = current_tenant();
+    let n = store()
+        .delete_view(&tenant, &req.api_name)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("删除场景视图失败: {e}")))?;
+    Ok(Json(ApiResp::ok(
+        json!({ "apiName": req.api_name, "deleted": n > 0 }),
+    )))
+}
+
+/// POST /views/layout 请求体。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveViewLayoutReq {
+    pub api_name: String,
+    pub layout: Value,
+}
+
+/// POST /views/layout —— 布局单列 LWW 直写（不做版本检查）。
+/// auto 视图行不存在时按需落行（meta+layout+source=auto，永不落 members——§2.1 生命周期①）。
+pub async fn save_view_layout(
+    Json(req): Json<SaveViewLayoutReq>,
+) -> Result<Json<ApiResp<Value>>> {
+    if !req.api_name.starts_with("auto:") && req.api_name.is_empty() {
+        return Err(OntoError::bad_request("apiName 不能为空"));
+    }
+    let tenant = current_tenant();
+    let ok = store()
+        .update_view_layout(&tenant, &req.api_name, &req.layout)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("保存画布布局失败: {e}")))?;
+    if !ok {
+        // 按需落行：auto 语义（成员仍读时现算）；manual 场景被并发删除则如实 404。
+        if let Some(domain) = req.api_name.strip_prefix("auto:") {
+            let def = SceneViewDef {
+                api_name: req.api_name.clone(),
+                display_name: format!("{domain}（域默认）"),
+                description: "按 DAM 域读时派生的默认场景".into(),
+                dam: cmx_onto_model::DamRef {
+                    domain: domain.to_string(),
+                    ..Default::default()
+                },
+                members: Default::default(),
+                source: ViewSource::Auto,
+                layout: req.layout,
+                version: 0,
+            };
+            store()
+                .upsert_view_locked(&tenant, &def)
+                .await
+                .map_err(|e| OntoError::internal_error(format!("落行场景视图失败: {e}")))?;
+            return Ok(Json(ApiResp::ok(
+                json!({ "apiName": req.api_name, "saved": true, "materialized": true }),
+            )));
+        }
+        return Err(OntoError::not_found(format!(
+            "场景视图 {} 不存在（可能已被删除）",
+            req.api_name
+        )));
+    }
+    Ok(Json(ApiResp::ok(json!({ "apiName": req.api_name, "saved": true }))))
+}
+
+// ───────────────────────── 成员级装载（GET /graph） ─────────────────────────
+
+/// GET /graph 查询参数。
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct GraphQuery {
+    pub view: Option<String>,
+}
+
+/// GET /graph?view=X —— 服务端组装成员级 spec（一条请求到位）。
+///
+/// 响应：`{ view: {...meta}, spec: {name, nodes, edges}, sharedProperties: [...] }`。
+/// 节点附跨场景关系角标数据（externalCount/externalPeers：单端在场的边 → 补引入口）。
+pub async fn graph(Query(q): Query<GraphQuery>) -> Result<Json<ApiResp<Value>>> {
+    let tenant = current_tenant();
+    let view_name = q
+        .view
+        .clone()
+        .ok_or_else(|| OntoError::bad_request("缺少 view 参数（场景视图 apiName）"))?;
+
+    let s = store();
+    // 1. 解析视图 → 成员集合（manual 物化 / auto 按域现算；无行的 auto: 虚拟条目同样现算）。
+    let (view_meta, member_objects, member_interfaces, layout) = resolve_view(&tenant, &view_name).await?;
+
+    // 2. 成员对象全量定义（D15 批量；清单里被并发删除的静默跳过）。
+    let defs = s
+        .get_object_types_batch(&tenant, &member_objects)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("批量装载成员对象失败: {e}")))?;
+    let def_by_name: BTreeMap<String, &ObjectTypeDef> =
+        defs.iter().map(|d| (d.api_name.clone(), d)).collect();
+
+    // 3. 接口集合 = 成员对象 implements 并集 ∪ members.interfaces。
+    let mut iface_names: BTreeSet<String> = member_interfaces.iter().cloned().collect();
+    for d in &defs {
+        for i in &d.implements {
+            iface_names.insert(i.clone());
+        }
+    }
+
+    // 4. 关系边：两端在场才画；单端在场 → 角标数据（externalCount/externalPeers）。
+    let all_links = s
+        .list_link_types(&tenant)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("装载关系清单失败: {e}")))?;
+    let member_set: BTreeSet<&str> = def_by_name.keys().map(|k| k.as_str()).collect();
+    let mut edges: Vec<Value> = Vec::new();
+    let mut external: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    for lt in &all_links {
+        let a_in = member_set.contains(lt.object_type_a.as_str());
+        let b_in = member_set.contains(lt.object_type_b.as_str());
+        match (a_in, b_in) {
+            (true, true) => edges.push(json!({
+                "apiName": lt.api_name,
+                "source": lt.object_type_a,
+                "target": lt.object_type_b,
+                "displayName": lt.display_name,
+                "cardinality": serde_json::to_value(lt.cardinality).unwrap_or(json!("oneToMany")),
+            })),
+            (true, false) => external.entry(lt.object_type_a.clone()).or_default().push(json!({
+                "apiName": lt.api_name,
+                "displayName": lt.display_name,
+                "peer": lt.object_type_b,
+            })),
+            (false, true) => external.entry(lt.object_type_b.clone()).or_default().push(json!({
+                "apiName": lt.api_name,
+                "displayName": lt.display_name,
+                "peer": lt.object_type_a,
+            })),
+            (false, false) => {}
+        }
+    }
+
+    // 5. 组装节点（对象全卡 + 接口胶囊；属性投影与 designer 同口径）。
+    let mut nodes: Vec<Value> = Vec::new();
+    let mut shared_refs: BTreeSet<String> = BTreeSet::new();
+    for d in &defs {
+        let mut props: Vec<Value> = Vec::new();
+        for p in &d.properties {
+            if let Some(sp) = &p.shared_property {
+                shared_refs.insert(sp.clone());
+            }
+            props.push(project_property(p, &d.primary_key, &d.title_property));
+        }
+        let group_path: Vec<String> = [&d.dam.domain, &d.dam.application, &d.dam.module]
+            .iter()
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect();
+        let peers = external.get(&d.api_name).cloned().unwrap_or_default();
+        nodes.push(json!({
+            "id": d.api_name,
+            "kind": "object",
+            "displayName": d.display_name,
+            "status": serde_json::to_value(d.status).unwrap_or(json!("experimental")),
+            "color": d.color,
+            "icon": d.icon,
+            "groupPath": group_path,
+            "properties": props,
+            "implements": d.implements,
+            "externalCount": peers.len(),
+            "externalPeers": peers,
+        }));
+    }
+    for name in &iface_names {
+        let iface = s
+            .get_interface(&tenant, name)
+            .await
+            .map_err(|e| OntoError::internal_error(format!("装载接口失败: {e}")))?;
+        let Some(iface) = iface else { continue };
+        nodes.push(json!({
+            "id": iface.api_name,
+            "kind": "interface",
+            "displayName": iface.display_name,
+            "status": serde_json::to_value(iface.status).unwrap_or(json!("experimental")),
+        }));
+    }
+
+    // 6. 共享属性详情批量（Inspector 语义类型展示用）。
+    let shared_names: Vec<String> = shared_refs.into_iter().collect();
+    let shared_items = s
+        .get_shared_properties_batch(&tenant, &shared_names)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("批量装载共享属性失败: {e}")))?;
+    let shared_values: Vec<Value> = shared_items
+        .iter()
+        .map(|sp| serde_json::to_value(sp).unwrap_or(Value::Null))
+        .collect();
+
+    Ok(Json(ApiResp::ok(json!({
+        "view": view_meta,
+        "spec": { "name": view_name, "nodes": nodes, "edges": edges },
+        "layout": layout,
+        "sharedProperties": shared_values,
+    }))))
+}
+
+/// 解析视图 →（meta、成员对象、成员接口、layout）。auto 视图（含虚拟条目）按 DAM 现算成员。
+async fn resolve_view(
+    tenant: &str,
+    view_name: &str,
+) -> Result<(Value, Vec<String>, Vec<String>, Value)> {
+    let s = store();
+    let row = s
+        .get_view(tenant, view_name)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("装载场景视图失败: {e}")))?;
+    if let Some(def) = row {
+        let (objects, ifaces) = match def.source {
+            ViewSource::Manual => (
+                def.members.objects.clone(),
+                def.members.interfaces.clone(),
+            ),
+            ViewSource::Auto => {
+                let key = def.api_name.strip_prefix("auto:").unwrap_or(&def.api_name);
+                (domain_objects(tenant, key).await?, Vec::new())
+            }
+        };
+        let meta = json!({
+            "apiName": def.api_name,
+            "displayName": def.display_name,
+            "description": def.description,
+            "dam": serde_json::to_value(&def.dam).unwrap_or(json!({})),
+            "source": serde_json::to_value(def.source).unwrap_or(json!("manual")),
+            "objectCount": objects.len(),
+            "interfaceCount": ifaces.len(),
+            "virtual": false,
+            "version": def.version,
+        });
+        return Ok((meta, objects, ifaces, def.layout));
+    }
+    // 无行：仅 auto: 虚拟形态可现算；其余 404。
+    let Some(domain) = view_name.strip_prefix("auto:") else {
+        return Err(OntoError::not_found(format!("场景视图 {view_name} 不存在")));
+    };
+    let objects = domain_objects(tenant, domain).await?;
+    let meta = json!({
+        "apiName": view_name,
+        "displayName": format!("{domain}（域默认）"),
+        "description": "按 DAM 域读时派生的默认场景".to_string(),
+        "dam": { "domain": domain },
+        "source": "auto",
+        "objectCount": objects.len(),
+        "interfaceCount": 0,
+        "virtual": true,
+        "version": 0,
+    });
+    Ok((meta, objects, Vec::new(), Value::Null))
+}
+
+/// 域内对象清单（auto 成员现算；域消失 → 空集 → 上层自然渲染空场景）。
+async fn domain_objects(tenant: &str, domain: &str) -> Result<Vec<String>> {
+    let metas = store()
+        .list_object_types(tenant)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("装载对象清单失败: {e}")))?;
+    Ok(metas
+        .into_iter()
+        .filter(|m| m.dam.domain.trim() == domain.trim())
+        .map(|m| m.api_name)
+        .collect())
+}
+
+// ─────────────────── A1：共享属性批量 / A2：目录分页 ───────────────────
+
+/// POST /shared-properties/batch 请求体。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedPropertiesBatchReq {
+    pub api_names: Vec<String>,
+}
+
+/// POST /shared-properties/batch —— `{items, errors}`（缺失项按清单比对进 errors，响应形状与
+/// object-types/batch 的纯数组不同：A1 新端点自带缺失表达，新页面按清单比对免二次请求）。
+pub async fn get_shared_properties_batch(
+    Json(req): Json<SharedPropertiesBatchReq>,
+) -> Result<Json<ApiResp<Value>>> {
+    if req.api_names.len() > 500 {
+        return Err(OntoError::bad_request("apiNames 数量超限（≤500）"));
+    }
+    let tenant = current_tenant();
+    let items = store()
+        .get_shared_properties_batch(&tenant, &req.api_names)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("批量装载共享属性失败: {e}")))?;
+    let found: BTreeSet<&str> = items.iter().map(|i| i.api_name.as_str()).collect();
+    let errors: Vec<String> = req
+        .api_names
+        .iter()
+        .filter(|n| !found.contains(n.as_str()))
+        .cloned()
+        .collect();
+    let item_values: Vec<Value> = items
+        .iter()
+        .map(|sp| serde_json::to_value(sp).unwrap_or(Value::Null))
+        .collect();
+    Ok(Json(ApiResp::ok(json!({ "items": item_values, "errors": errors }))))
+}
+
+/// GET /object-types 查询参数（A2；全缺省 = 既有全量数组语义，旧设计器零感知）。
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ObjectTypesListQuery {
+    pub q: Option<String>,
+    pub dam: Option<String>,
+    pub page: Option<u32>,
+    pub size: Option<u32>,
+}
+
+/// GET /object-types —— 清单：不传参返回全量数组（既有语义）；传 q/dam/page/size 任一
+/// 返回分页信封 `{rows, total, page, size}`（仅新页面目录表格使用）。
+pub async fn list_object_types(
+    Query(qp): Query<ObjectTypesListQuery>,
+) -> Result<Json<ApiResp<Value>>> {
+    let tenant = current_tenant();
+    let paged =
+        qp.q.is_some() || qp.dam.is_some() || qp.page.is_some() || qp.size.is_some();
+    if !paged {
+        let metas = store()
+            .list_object_types(&tenant)
+            .await
+            .map_err(|e| OntoError::internal_error(format!("列出对象类型失败: {e}")))?;
+        return Ok(Json(ApiResp::ok(json!(metas))));
+    }
+    let page = qp.page.unwrap_or(1);
+    let size = qp.size.unwrap_or(50);
+    let (rows, total) = store()
+        .list_object_types_paged(&tenant, qp.q.as_deref().unwrap_or(""), qp.dam.as_deref().unwrap_or(""), page, size)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("查询对象目录失败: {e}")))?;
+    let row_values: Vec<Value> = rows
+        .iter()
+        .map(|m| serde_json::to_value(m).unwrap_or(Value::Null))
+        .collect();
+    Ok(Json(ApiResp::ok(json!({
+        "rows": row_values,
+        "total": total,
+        "page": page,
+        "size": size,
+    }))))
+}
+
+// ───────────────────────── spec 属性投影 ─────────────────────────
+
+/// 属性定义 → 组件 spec 属性行（与 designer.js projectProp 同口径；层块递归）。
+fn project_property(p: &PropertyTypeDef, primary_key: &str, title_property: &str) -> Value {
+    let mut obj = json!({
+        "apiName": p.api_name,
+        "displayName": p.display_name,
+        "baseType": serde_json::to_value(p.base_type).unwrap_or(json!("string")),
+        "isPrimaryKey": p.api_name == primary_key,
+        "isTitle": p.api_name == title_property,
+        "required": p.required,
+        "isIndexed": p.is_indexed,
+    });
+    if let Some(st) = &p.semantic_type {
+        obj["semanticType"] = json!(st);
+    }
+    if matches!(p.base_type, PropertyBaseType::Array | PropertyBaseType::Struct) {
+        let is_level = p
+            .constraints
+            .get("level")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if is_level {
+            obj["isLevel"] = json!(true);
+            if let Some(e) = p.constraints.get("entity").and_then(|v| v.as_str()) {
+                obj["entityName"] = json!(e);
+            }
+            let children: Vec<Value> = p
+                .constraints
+                .get("children")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|c| serde_json::from_value::<PropertyTypeDef>(c.clone()).ok())
+                        .map(|cp| project_property(&cp, primary_key, title_property))
+                        .collect()
+                })
+                .unwrap_or_default();
+            obj["children"] = json!(children);
+        }
+    }
+    obj
+}
+

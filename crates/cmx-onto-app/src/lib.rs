@@ -29,6 +29,7 @@ pub mod resp;
 pub mod stats;
 pub mod tenancy;
 pub mod tenant;
+pub mod view_handlers;
 
 pub use auth::auth as auth_middleware;
 pub use engine::{warm_store, ONTO_DB_ID};
@@ -66,7 +67,7 @@ where
         // —— 对象类型 ——
         .route(
             "/object-types",
-            get(handlers::list_object_types).post(handlers::save_object_type),
+            get(view_handlers::list_object_types).post(handlers::save_object_type),
         )
         .route("/object-types/validate", post(handlers::validate_object_type))
         // D15：批量详情（设计器首屏装载；静态段 + POST + JSON body，符合新接口规范）。
@@ -102,6 +103,16 @@ where
             "/shared-properties/{api_name}",
             get(handlers::get_shared_property).delete(handlers::delete_shared_property),
         )
+        // A1：共享属性批量详情（本体工作室装载层，{items,errors}）。
+        .route("/shared-properties/batch", post(view_handlers::get_shared_properties_batch))
+        // —— 场景视图（本体工作室 P1）——
+        .route(
+            "/views",
+            get(view_handlers::list_views).post(view_handlers::save_view),
+        )
+        .route("/views/remove", post(view_handlers::remove_view))
+        .route("/views/layout", post(view_handlers::save_view_layout))
+        .route("/graph", get(view_handlers::graph))
         // —— 动作类型 ——
         .route(
             "/action-types",

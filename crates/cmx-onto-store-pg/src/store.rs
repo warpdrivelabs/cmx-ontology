@@ -51,13 +51,13 @@ impl PgOntologyStore {
         Ok(())
     }
 
-    async fn exec(&self, sql: &str, params: Vec<DataValue>) -> StoreResult<u64> {
+    pub(crate) async fn exec(&self, sql: &str, params: Vec<DataValue>) -> StoreResult<u64> {
         execute_sql_with_params(&self.db_id, None, sql, SqlParams::DataValues(params))
             .await
             .map_err(|e| StoreError::Backend(format!("执行失败: {e}")))
     }
 
-    async fn query(&self, sql: &str, params: Vec<DataValue>, ds_id: &str) -> StoreResult<DataSet> {
+    pub(crate) async fn query(&self, sql: &str, params: Vec<DataValue>, ds_id: &str) -> StoreResult<DataSet> {
         query_sql_with_params(&self.db_id, None, sql, SqlParams::DataValues(params), ds_id)
             .await
             .map_err(|e| StoreError::Backend(format!("查询失败: {e}")))
@@ -497,10 +497,15 @@ impl OntologyStore for PgOntologyStore {
     }
 
     async fn list_link_types(&self, _tenant: &str) -> StoreResult<Vec<LinkTypeMeta>> {
+        // A3 清单富化：LEFT JOIN 两端对象类型的 DAM（跨域关系治理；对端被删 → None 跳过序列化）。
         let ds = self
             .query(
-                "SELECT api_name, display_name, cardinality, object_type_a, object_type_b, status, updated_at \
-                 FROM om_link_type ORDER BY updated_at DESC",
+                "SELECT l.api_name, l.display_name, l.cardinality, l.object_type_a, l.object_type_b, \
+                 l.status, l.updated_at, da.dam AS dam_a, db.dam AS dam_b \
+                 FROM om_link_type l \
+                 LEFT JOIN om_object_type da ON da.api_name = l.object_type_a \
+                 LEFT JOIN om_object_type db ON db.api_name = l.object_type_b \
+                 ORDER BY l.updated_at DESC",
                 vec![],
                 "om_link_type_list",
             )
@@ -516,6 +521,8 @@ impl OntologyStore for PgOntologyStore {
                 object_type_b: get_opt_string(row, s, "object_type_b").unwrap_or_default(),
                 status: parse_status(row, s),
                 updated_at: get_opt_ts(row, s, "updated_at"),
+                dam_a: get_opt_json(row, s, "dam_a").and_then(|v| serde_json::from_value(v).ok()),
+                dam_b: get_opt_json(row, s, "dam_b").and_then(|v| serde_json::from_value(v).ok()),
             });
         }
         Ok(out)
@@ -574,14 +581,30 @@ impl OntologyStore for PgOntologyStore {
     }
 
     async fn list_interfaces(&self, _tenant: &str) -> StoreResult<Vec<SimpleTypeMeta>> {
+        // A3 清单富化：附继承链（extends 本表列）与实现者清单（om_object_type.implements 数组
+        // 包含性子查询：implements @> "apiName" 标量）；其余四类 simple 清单不填（None）。
         let ds = self
             .query(
-                "SELECT api_name, display_name, updated_at FROM om_interface ORDER BY updated_at DESC",
+                "SELECT i.api_name, i.display_name, i.updated_at, i.extends,                  (SELECT json_agg(o.api_name) FROM om_object_type o WHERE o.implements @> to_jsonb(i.api_name::text)) AS implements_by \
+                 FROM om_interface i ORDER BY i.updated_at DESC",
                 vec![],
                 "om_interface_list",
             )
             .await?;
-        Ok(simple_metas(&ds))
+        let s = ds.schema.as_ref();
+        let mut out = Vec::new();
+        for row in ds.iter() {
+            out.push(SimpleTypeMeta {
+                api_name: get_opt_string(row, s, "api_name").unwrap_or_default(),
+                display_name: get_opt_string(row, s, "display_name").unwrap_or_default(),
+                updated_at: get_opt_ts(row, s, "updated_at"),
+                implements_by: get_opt_json(row, s, "implements_by")
+                    .and_then(|v| serde_json::from_value(v).ok()),
+                extends: get_opt_json(row, s, "extends")
+                    .and_then(|v| serde_json::from_value(v).ok()),
+            });
+        }
+        Ok(out)
     }
 
     /// B1：删接口**同事务**级联清各对象类型的 implements 引用（消灭悬空引用；方案唯一行为级豁免）。
@@ -915,6 +938,9 @@ fn simple_metas(ds: &DataSet) -> Vec<SimpleTypeMeta> {
             api_name: get_opt_string(row, s, "api_name").unwrap_or_default(),
             display_name: get_opt_string(row, s, "display_name").unwrap_or_default(),
             updated_at: get_opt_ts(row, s, "updated_at"),
+            // A3 富化仅接口填充（见 list_interfaces）；共享属性/动作/函数恒 None。
+            implements_by: None,
+            extends: None,
         });
     }
     out
@@ -934,7 +960,7 @@ fn str_to_enum<T: DeserializeOwned + Default>(s: &str) -> T {
 }
 
 /// status 列还原（VARCHAR → TypeStatus）。
-fn parse_status(row: &Row, schema: &Schema) -> TypeStatus {
+pub(crate) fn parse_status(row: &Row, schema: &Schema) -> TypeStatus {
     str_to_enum(&get_opt_string(row, schema, "status").unwrap_or_default())
 }
 
@@ -944,7 +970,7 @@ fn json_arr<T: Serialize>(v: &T) -> DataValue {
 }
 
 /// serde_json::Value → jsonb DataValue；Null 用 default 兜底（列 NOT NULL）。
-fn json_or_default(v: &Value, default: &str) -> DataValue {
+pub(crate) fn json_or_default(v: &Value, default: &str) -> DataValue {
     if v.is_null() {
         DataValue::Json(default.to_string())
     } else {
@@ -962,14 +988,14 @@ fn opt_json(v: &Option<Value>) -> DataValue {
     }
 }
 
-fn opt_str(v: &Option<String>) -> DataValue {
+pub(crate) fn opt_str(v: &Option<String>) -> DataValue {
     match v {
         Some(s) => DataValue::String(s.clone()),
         None => DataValue::Null,
     }
 }
 
-fn get_string(row: &Row, schema: &Schema, col: &str) -> StoreResult<String> {
+pub(crate) fn get_string(row: &Row, schema: &Schema, col: &str) -> StoreResult<String> {
     match row.get_by_name(schema, col) {
         Some(DataValue::String(s)) => Ok(s.clone()),
         Some(DataValue::ShortStr(s)) | Some(DataValue::LongStr(s)) => Ok(s.to_string()),
@@ -977,7 +1003,7 @@ fn get_string(row: &Row, schema: &Schema, col: &str) -> StoreResult<String> {
     }
 }
 
-fn get_opt_string(row: &Row, schema: &Schema, col: &str) -> Option<String> {
+pub(crate) fn get_opt_string(row: &Row, schema: &Schema, col: &str) -> Option<String> {
     match row.get_by_name(schema, col) {
         Some(DataValue::String(s)) => Some(s.clone()),
         Some(DataValue::ShortStr(s)) | Some(DataValue::LongStr(s)) => Some(s.to_string()),
@@ -985,21 +1011,21 @@ fn get_opt_string(row: &Row, schema: &Schema, col: &str) -> Option<String> {
     }
 }
 
-fn get_i64(row: &Row, schema: &Schema, col: &str) -> i64 {
+pub(crate) fn get_i64(row: &Row, schema: &Schema, col: &str) -> i64 {
     match row.get_by_name(schema, col) {
         Some(DataValue::Int(v)) => *v,
         _ => 0,
     }
 }
 
-fn get_opt_ts(row: &Row, schema: &Schema, col: &str) -> Option<DateTime<Utc>> {
+pub(crate) fn get_opt_ts(row: &Row, schema: &Schema, col: &str) -> Option<DateTime<Utc>> {
     match row.get_by_name(schema, col) {
         Some(DataValue::DateTime(dt)) => Some(*dt),
         _ => None,
     }
 }
 
-fn get_json(row: &Row, schema: &Schema, col: &str) -> StoreResult<Value> {
+pub(crate) fn get_json(row: &Row, schema: &Schema, col: &str) -> StoreResult<Value> {
     match row.get_by_name(schema, col) {
         Some(DataValue::Json(s)) => {
             serde_json::from_str(s).map_err(|e| StoreError::Backend(format!("解析 {col} jsonb 失败: {e}")))
@@ -1010,7 +1036,7 @@ fn get_json(row: &Row, schema: &Schema, col: &str) -> StoreResult<Value> {
     }
 }
 
-fn get_opt_json(row: &Row, schema: &Schema, col: &str) -> Option<Value> {
+pub(crate) fn get_opt_json(row: &Row, schema: &Schema, col: &str) -> Option<Value> {
     match row.get_by_name(schema, col) {
         Some(DataValue::Json(s)) | Some(DataValue::String(s)) => serde_json::from_str(s).ok(),
         _ => None,
