@@ -22,7 +22,7 @@ pub mod osdk;
 
 pub use def::*;
 pub use draft::{
-    derive_deletions, diff_snapshots, snapshot_fingerprint, validate_draft, DeletionRef,
+    derive_deletions, diff_snapshots, kind_key, snapshot_fingerprint, validate_draft, DeletionRef,
     DiffAction, DiffItem, DraftContent, DraftRow, IssueSeverity, ValidationIssue, ELEMENT_KINDS,
     KIND_ACTION, KIND_FUNCTION, KIND_INTERFACE, KIND_LINK, KIND_OBJECT, KIND_SHARED, KIND_VIEW,
 };

@@ -120,7 +120,9 @@ pub(crate) async fn ensure_draft_forked(tenant: &str) -> Result<(DraftRow, Value
     if let Some(row) = s.get_draft_row().await.map_err(draft_store_err("读草稿失败"))? {
         return Ok((row, live));
     }
-    let content: DraftContent = serde_json::from_value(live.clone()).unwrap_or_default();
+    let content: DraftContent = serde_json::from_value(live.clone()).map_err(|e| {
+        OntoError::internal_error(format!("live 快照转草稿内容失败（拒绝静默空草稿，禁止 fork）: {e}"))
+    })?;
     s.insert_draft_row(&content, &snapshot_fingerprint(&live), current_display_user())
         .await
         .map_err(draft_store_err("fork 落行失败"))?;
@@ -226,6 +228,12 @@ pub async fn releases_preview() -> Result<Json<ApiResp<Value>>> {
     let counts = count_diff(&diff);
     let latest = s.latest_rev().await.map_err(draft_store_err("读版本失败"))?;
     let draft_rev = snapshot_fingerprint(&draft_snap);
+    // live 六类元素总数（前端大规模删除护栏阈值同口径：max(50, liveTotal/5)）。
+    let live_total: usize = cmx_onto_model::ELEMENT_KINDS
+        .iter()
+        .filter_map(|k| cmx_onto_model::kind_key(k))
+        .map(|key| live.get(key).and_then(|v| v.as_array()).map_or(0, |a| a.len()))
+        .sum();
     Ok(Json(ApiResp::ok(json!({
         "hasDraft": true,
         "baseRev": row.base_rev,
@@ -234,6 +242,9 @@ pub async fn releases_preview() -> Result<Json<ApiResp<Value>>> {
         "draftRev": draft_rev,
         "willCreateVersion": latest.as_ref().is_none_or(|(_, r)| r != &draft_rev),
         "latestVersion": latest.map(|(v, _)| v),
+        "liveTotal": live_total,
+        "massDelete": counts.get("removed").and_then(|v| v.as_u64()).unwrap_or(0)
+            > std::cmp::max(50, live_total / 5) as u64,
         "updatedBy": row.updated_by,
         "updatedAt": row.updated_at,
         "diff": diff,
@@ -261,6 +272,9 @@ fn count_diff(diff: &[cmx_onto_model::DiffItem]) -> Value {
 #[serde(rename_all = "camelCase", default)]
 pub struct PublishReq {
     pub summary: String,
+    /// 大规模删除护栏（H1）：派生删除集（live − 草稿）超过阈值时必须显式 true——
+    /// 防草稿意外清空（前端整包空保存/结构漂移）被无声发布、把 live 全量删除。
+    pub confirm_mass_delete: bool,
 }
 
 /// POST /releases/publish —— 发布门：base_rev 防覆盖（live 被直改 → 409 要求 rebase）→
@@ -300,6 +314,24 @@ pub async fn releases_publish(Json(req): Json<PublishReq>) -> Result<Json<ApiRes
             "发布校验未通过（{} 项阻断）：{}",
             errors.len(),
             heads.join("；")
+        )));
+    }
+    // 大规模删除护栏（H1）：派生删除集 = live − 草稿，与发布应用事务内同一口径。
+    // 草稿意外变空时此集 = live 全量——超阈值必须显式确认，不给「无声清库」留通路。
+    let draft_snap = row.content.to_snapshot_value();
+    let deletions = cmx_onto_model::derive_deletions(&live, &draft_snap);
+    let live_total: usize = cmx_onto_model::ELEMENT_KINDS
+        .iter()
+        .filter_map(|k| cmx_onto_model::kind_key(k))
+        .map(|key| live.get(key).and_then(|v| v.as_array()).map_or(0, |a| a.len()))
+        .sum();
+    let threshold = std::cmp::max(50, live_total / 5);
+    if deletions.len() > threshold && !req.confirm_mass_delete {
+        return Err(OntoError::conflict(format!(
+            "本次发布将删除 {} 个元素（live 共 {live_total}，超过护栏阈值 {threshold}）。\
+             确属批量删除请在发布请求带 confirmMassDelete=true；\
+             若草稿是被意外清空的，请先「丢弃草稿」重新 fork 再核对变更",
+            deletions.len()
         )));
     }
     let summary = if req.summary.trim().is_empty() { "（无摘要）" } else { req.summary.trim() };
@@ -388,13 +420,16 @@ pub async fn versions_restore(Json(req): Json<RestoreReq>) -> Result<Json<ApiRes
         .await
         .map_err(|e| OntoError::internal_error(format!("组装 live 快照失败: {e}")))?;
 
-    let mut content: DraftContent = serde_json::from_value(snap.clone()).unwrap_or_default();
+    // fail-loud：快照反序列化失败必须报错（静默 Default 会让回滚草稿变空，发布时清空 live）。
+    let mut content: DraftContent = serde_json::from_value(snap.clone()).map_err(|e| {
+        OntoError::internal_error(format!("版本 {} 快照反序列化失败: {e}", req.version))
+    })?;
     content.deletions = derive_deletions_payload(&live, &snap);
-    // 快照有 views 段（本轮次起的新快照）→ 随滚；旧版本无段 → 场景保持现状。
+    // 快照有 views 段（本轮次起的新版本）→ 随滚；旧版本无段 → 场景保持现状。
     let has_views = snap.get("views").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty());
     if has_views {
         content.views = serde_json::from_value(snap.get("views").cloned().unwrap_or(json!([])))
-            .unwrap_or_default();
+            .map_err(|e| OntoError::internal_error(format!("版本快照 views 段反序列化失败: {e}")))?;
     } else {
         content.views = s
             .list_view_defs(&tenant)

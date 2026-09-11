@@ -69,10 +69,14 @@ impl PgOntologyStore {
             .await?;
         let Some(row) = ds.iter().next() else { return Ok(None) };
         let s = ds.schema.as_ref();
-        let content: DraftContent = crate::store::get_json(row, s, "content")
-            .ok()
-            .and_then(|v| serde_json::from_value(v).ok())
-            .unwrap_or_default();
+        // fail-loud（不可静默置空）：草稿内容解析失败若退成 Default，后续保存会把空内容写回、
+        // 发布会派生删除全量 live——必须把错误抛给调用方。
+        let content: DraftContent = serde_json::from_value(crate::store::get_json(row, s, "content")?)
+            .map_err(|e| {
+                StoreError::Backend(format!(
+                    "草稿内容反序列化失败（可能与当前版本结构不兼容，已拒绝静默置空）: {e}"
+                ))
+            })?;
         Ok(Some(DraftRow {
             version: get_i64(row, s, "version") as u32,
             base_rev: get_opt_string(row, s, "base_rev").unwrap_or_default(),
