@@ -92,7 +92,9 @@ pub async fn me_roles() -> Result<Json<ApiResp<Value>>> {
 // ───────────────────────────── 草稿 ─────────────────────────────
 
 /// GET /draft —— 读草稿；无行则惰性 fork（七类 = live 全量、views = live om_view 拷贝、
-/// base_rev = live 指纹）。响应附 liveRev（前端「草稿有未发布变更」徽标 = fingerprint(draft) ≠ liveRev）。
+/// base_rev = live 指纹）。**不组装 live 全量快照**：dirty/liveRev 从 base_rev 推出
+/// （fork 后 live 侧不变则两者恒等；live 被他人发布推进的场景由发布门 `releases_publish`
+/// 的 base_rev 实时比对 409 兜底）——高频读省去七表全量拉取与两轮全量指纹。
 pub async fn get_draft() -> Result<Json<ApiResp<Value>>> {
     require_maintainer().await?;
     let tenant = current_tenant();
@@ -104,11 +106,7 @@ pub async fn get_draft() -> Result<Json<ApiResp<Value>>> {
             row
         }
     };
-    let live = s
-        .snapshot_full(&tenant)
-        .await
-        .map_err(|e| OntoError::internal_error(format!("组装 live 快照失败: {e}")))?;
-    Ok(Json(ApiResp::ok(draft_payload(&row, &live))))
+    Ok(Json(ApiResp::ok(draft_payload(&row))))
 }
 
 /// 惰性 fork：读行；无行 → live 快照落行（ON CONFLICT DO NOTHING 幂等）→ 重读。
@@ -134,16 +132,17 @@ pub(crate) async fn ensure_draft_forked(tenant: &str) -> Result<(DraftRow, Value
     Ok((row, live))
 }
 
-/// 草稿行 → 响应 Value（含 dirty 判定所需的 liveRev）。
-fn draft_payload(row: &DraftRow, live: &Value) -> Value {
-    let draft_snap = row.content.to_snapshot_value();
+/// 草稿行 → 响应 Value。dirty/liveRev 从 base_rev 推出（base_rev = fork 时刻 live 指纹，
+/// 即「草稿相对基线有无未发布改动」的权威口径；live 被他人推进由发布门实时比对兜底）。
+fn draft_payload(row: &DraftRow) -> Value {
+    let draft_rev = snapshot_fingerprint(&row.content.to_snapshot_value());
     json!({
         "version": row.version,
         "baseRev": row.base_rev,
         "updatedBy": row.updated_by,
         "updatedAt": row.updated_at,
-        "liveRev": snapshot_fingerprint(live),
-        "dirty": snapshot_fingerprint(&draft_snap) != snapshot_fingerprint(live),
+        "liveRev": row.base_rev,
+        "dirty": draft_rev != row.base_rev,
         "content": serde_json::to_value(&row.content).unwrap_or(Value::Null),
     })
 }
