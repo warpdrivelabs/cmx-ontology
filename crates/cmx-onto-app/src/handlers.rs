@@ -43,8 +43,8 @@ pub struct ObjectTypesBatchReq {
 pub async fn get_object_types_batch(
     Json(req): Json<ObjectTypesBatchReq>,
 ) -> Result<Json<ApiResp<Value>>> {
-    if req.api_names.len() > 500 {
-        return Err(OntoError::bad_request("apiNames 数量超限（≤500）"));
+    if req.api_names.len() > 2000 {
+        return Err(OntoError::bad_request("apiNames 数量超限（≤2000）"));
     }
     let tenant = current_tenant();
     let defs = store()
