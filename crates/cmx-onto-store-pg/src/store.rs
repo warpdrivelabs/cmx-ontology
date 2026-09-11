@@ -26,7 +26,7 @@ use serde_json::Value;
 /// PG 本体存储。`db_id` 指向已注册的数据源（多租户下按租户派生）。
 #[derive(Clone)]
 pub struct PgOntologyStore {
-    db_id: String,
+    pub(crate) db_id: String,
 }
 
 impl PgOntologyStore {
@@ -901,7 +901,7 @@ impl OntologyStore for PgOntologyStore {
 
 /// om_object_type 详情行 → `ObjectTypeDef`（单查 / 批量共用；列清单见
 /// `get_object_type` / `get_object_types_batch` 的同款 SELECT）。
-fn object_def_from_row(row: &Row, s: &Schema) -> StoreResult<ObjectTypeDef> {
+pub(crate) fn object_def_from_row(row: &Row, s: &Schema) -> StoreResult<ObjectTypeDef> {
     let properties: Vec<PropertyTypeDef> = get_json(row, s, "properties")
         .ok()
         .and_then(|v| serde_json::from_value(v).ok())
@@ -955,7 +955,7 @@ fn enum_to_str<T: Serialize>(v: &T) -> String {
 }
 
 /// camelCase 文本 → 枚举（未知/空 → Default）。
-fn str_to_enum<T: DeserializeOwned + Default>(s: &str) -> T {
+pub(crate) fn str_to_enum<T: DeserializeOwned + Default>(s: &str) -> T {
     serde_json::from_value(Value::String(s.to_string())).unwrap_or_default()
 }
 

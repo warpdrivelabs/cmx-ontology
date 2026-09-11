@@ -190,6 +190,24 @@ pub const DDL_STATEMENTS: &[&str] = &[
         updated_at      TIMESTAMPTZ  NOT NULL
     )"#,
     "CREATE INDEX IF NOT EXISTS idx_om_view_source ON om_view (source)",
+    // —— 草稿工作区（本体工作室 P2，方案 §2.4/§七）——
+    // 单工作区恒一行（id=1）；content = 七类元素 + deletions + views 段；base_rev = fork/最近
+    // 同步时的 live 快照指纹（发布比对当前 live 指纹，防覆盖；不一致 409 → rebase）。
+    r#"CREATE TABLE IF NOT EXISTS om_draft (
+        id              INTEGER      PRIMARY KEY,
+        content         JSONB        NOT NULL,
+        base_rev        VARCHAR(64)  NOT NULL DEFAULT '',
+        version         INTEGER      NOT NULL DEFAULT 0,
+        updated_by      VARCHAR(128),
+        updated_at      TIMESTAMPTZ  NOT NULL
+    )"#,
+    // —— 维护角色白名单（P2 写路径授权；方案 §七——不复用 om_policy（行级 PDP 语义错位））——
+    // **空白名单 = 开放**（P1 全员维护等效语义；生产由 DBA 录入行即收敛为白名单模式）。
+    r#"CREATE TABLE IF NOT EXISTS om_maintainer (
+        subject         VARCHAR(128) PRIMARY KEY,
+        subject_kind    VARCHAR(16)  NOT NULL DEFAULT 'user',
+        created_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
+    )"#,
 ];
 
 /// 表 / 列注释（COMMENT ON 幂等覆盖）。随 `DDL_STATEMENTS` 一起在启动钩子重放。
@@ -346,4 +364,17 @@ pub const DDL_COMMENTS: &[&str] = &[
     "COMMENT ON COLUMN om_view.version IS '乐观锁版本号（每次保存 +1；layout 单列更新不递增）'",
     "COMMENT ON COLUMN om_view.created_at IS '创建时间'",
     "COMMENT ON COLUMN om_view.updated_at IS '最近更新时间'",
+    // —— 草稿工作区 ——
+    "COMMENT ON TABLE om_draft IS '草稿工作区（本体工作室 P2 双轨）：单工作区一行，编辑写草稿、发布原子应用 om_* 并打版本快照'",
+    "COMMENT ON COLUMN om_draft.id IS '恒 1（单工作区；按域多草稿列二期）'",
+    "COMMENT ON COLUMN om_draft.content IS '草稿内容 jsonb（六类元素全量定义 + deletions 显式删除清单 + views 场景视图段）'",
+    "COMMENT ON COLUMN om_draft.base_rev IS '基线 live 快照指纹（fork 时 xxh64；发布比对当前 live 指纹，不一致 409 → rebase）'",
+    "COMMENT ON COLUMN om_draft.version IS '行级乐观锁（他人保存过 → 409；与 base_rev 409 是两个错误源，客户端提示可区分）'",
+    "COMMENT ON COLUMN om_draft.updated_by IS '最近编辑人'",
+    "COMMENT ON COLUMN om_draft.updated_at IS '最近编辑时间（发布对话框绑发标注用）'",
+    // —— 维护角色白名单 ——
+    "COMMENT ON TABLE om_maintainer IS '本体维护角色白名单（P2 写路径授权）：空表 = 开放（P1 全员维护等效）；有行 = 仅命中者可写（评审门不可被直连 API 绕过）'",
+    "COMMENT ON COLUMN om_maintainer.subject IS '主体标识：用户 id / 用户名（subject_kind=user）或角色名（subject_kind=role）'",
+    "COMMENT ON COLUMN om_maintainer.subject_kind IS '主体类型：user 用户（默认）/ role 角色（JWT roles claim 命中即放行）'",
+    "COMMENT ON COLUMN om_maintainer.created_at IS '创建时间'",
 ];

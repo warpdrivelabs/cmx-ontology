@@ -9,7 +9,8 @@ use axum::response::Response;
 
 use cmx_engine_kit::auth::jwt::{self, JwtSpec};
 
-/// 本仓专属参数：无 SSE 票据路径（O1 无 EventSource 端点；O7 SSE 时补入）。
+/// 本仓专属参数：无 SSE 票据路径（空表）——`/events` 走标准 Bearer 鉴权，前端以
+/// fetch 流式读取（自带 Authorization header）消费 SSE，不用 EventSource。
 static SPEC: JwtSpec = JwtSpec::new("onto", &[], None);
 
 /// 认证中间件（建租户 scope + 确保租户库就绪后放行；签名不变）。

@@ -315,7 +315,7 @@ fn view_source_str(v: &ViewSource) -> &'static str {
     }
 }
 
-fn str_to_view_source(s: &str) -> ViewSource {
+pub(crate) fn str_to_view_source(s: &str) -> ViewSource {
     match s {
         "auto" => ViewSource::Auto,
         _ => ViewSource::Manual,

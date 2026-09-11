@@ -4,6 +4,7 @@
 //! [`OntologyStore`] 持久化契约 + 错误类型。零 DB / 零 cmx-* infra 依赖。
 
 pub mod def;
+pub mod draft;
 pub mod error;
 pub mod object_store;
 pub mod objectset;
@@ -20,6 +21,11 @@ pub mod import;
 pub mod osdk;
 
 pub use def::*;
+pub use draft::{
+    derive_deletions, diff_snapshots, snapshot_fingerprint, validate_draft, DeletionRef,
+    DiffAction, DiffItem, DraftContent, DraftRow, IssueSeverity, ValidationIssue, ELEMENT_KINDS,
+    KIND_ACTION, KIND_FUNCTION, KIND_INTERFACE, KIND_LINK, KIND_OBJECT, KIND_SHARED, KIND_VIEW,
+};
 pub use error::{Error, Result, StoreError, StoreResult};
 pub use object_store::{LinkEnds, LinkResolver, ObjectStore};
 pub use objectset::*;

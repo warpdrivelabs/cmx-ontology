@@ -66,9 +66,10 @@ async fn main() -> cmx_web_chassis::Result<()> {
             },
         ))
         .route("/onto/v1/openapi.json", axum::routing::get(openapi_json))
-        // O7 headless：Swagger UI（/api/onto/v1/docs）+ SSE 变更流（/api/onto/v1/events）——免认证层。
-        .route("/onto/v1/docs", axum::routing::get(cmx_onto_app::swagger_ui))
-        .route("/onto/v1/events", axum::routing::get(cmx_onto_app::sse_events));
+        // O7 headless：Swagger UI 免认证层。SSE（/events）P2 起注册进鉴权路由
+        //（onto_routes_v1 内；标准 Bearer 鉴权，前端以 fetch 流式读取消费 SSE）——
+        // 原免认证挂载移除（方案 §七）。
+        .route("/onto/v1/docs", axum::routing::get(cmx_onto_app::swagger_ui));
     let app_router = axum::Router::new()
         // 根 → 本体建模控制台（免认证，前端 fetch /api/onto/v1/*）。
         .route("/", axum::routing::get(cmx_onto_app::dashboard::dashboard))

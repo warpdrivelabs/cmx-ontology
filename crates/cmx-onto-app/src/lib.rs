@@ -13,6 +13,7 @@ pub mod engine;
 pub mod handlers;
 pub mod action_handlers;
 pub mod action_templates;
+pub mod draft_handlers;
 pub mod function_handlers;
 pub mod function_runtime;
 pub mod policy_handlers;
@@ -136,6 +137,17 @@ where
         .route("/publish", post(handlers::publish))
         .route("/versions", get(handlers::list_versions))
         .route("/versions/{version}", get(handlers::get_version))
+        // —— 草稿 / 发布双轨（本体工作室 P2，方案 §2.4/§七；POST 语义，无 PUT/可变路径段）——
+        .route("/draft", get(draft_handlers::get_draft))
+        .route("/draft/save", post(draft_handlers::save_draft))
+        .route("/draft/discard", post(draft_handlers::discard_draft))
+        .route("/releases/preview", post(draft_handlers::releases_preview))
+        .route("/releases/publish", post(draft_handlers::releases_publish))
+        .route("/versions/diff", get(draft_handlers::versions_diff))
+        .route("/versions/restore", post(draft_handlers::versions_restore))
+        .route("/me/roles", get(draft_handlers::me_roles))
+        // —— O7 实时（P2 注册进鉴权路由；标准 Bearer 鉴权，前端 fetch 流式读取消费 SSE）——
+        .route("/events", get(sse_events))
         // —— O2 对象层：对象写入 ——
         .route("/objects/{object_type}", post(object_handlers::put_object))
         .route(

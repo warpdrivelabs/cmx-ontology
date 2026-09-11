@@ -240,7 +240,7 @@ impl ActionExecutor {
         .await
         .map_err(|e| StoreError::Backend(format!("读对象失败: {e}")))?;
         let schema = ds.schema.as_ref();
-        for r in ds.iter() {
+        if let Some(r) = ds.iter().next() {
             let raw = crate::object_store::row_text(r, schema, "props");
             let v: Value = serde_json::from_str(&raw).unwrap_or(Value::Object(Map::new()));
             return Ok(Some(match v {
@@ -432,7 +432,7 @@ impl ActionExecutor {
         .await
         .map_err(|e| StoreError::Backend(format!("写审计失败: {e}")))?;
         let schema = ds.schema.as_ref();
-        for r in ds.iter() {
+        if let Some(r) = ds.iter().next() {
             let id = crate::object_store::row_text(r, schema, "id");
             return Ok(id.parse::<i64>().unwrap_or(0));
         }

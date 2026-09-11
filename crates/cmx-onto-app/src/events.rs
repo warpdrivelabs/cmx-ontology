@@ -43,7 +43,8 @@ pub struct EventsQuery {
     pub tenant: Option<String>,
 }
 
-/// GET /onto/v1/events —— SSE 变更流（免认证，挂文档层；按 tenant 过滤）。
+/// GET /onto/v1/events —— SSE 变更流（P2 起注册进鉴权路由，标准 Bearer 鉴权；
+/// 前端以 fetch 流式读取消费——cmx-data-comp `openSseStream`，按 tenant 过滤）。
 ///
 /// spawn 专用任务持 broadcast Receiver 全程，转发到 mpsc（rx 生命周期独立于 HTTP 流轮询，
 /// 避免流首帧后被 drop 导致 receiver_count=0 收不到后续事件）。

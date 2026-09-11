@@ -66,7 +66,7 @@ impl FunnelStore {
             .await?;
         let schema = ds.schema.as_ref();
         let mut out = Vec::new();
-        for r in ds.iter() {
+        if let Some(r) = ds.iter().next() {
             let g = |c: &str| crate::object_store::row_text(r, schema, c);
             let opt = |c: &str| { let s = g(c); if s.is_empty() || s == "Null" { Value::Null } else { Value::String(s) } };
             out.push(json!({
@@ -105,7 +105,7 @@ impl FunnelStore {
             ))
             .await?;
         let schema = ds.schema.as_ref();
-        for r in ds.iter() {
+        if let Some(r) = ds.iter().next() {
             let g = |c: &str| crate::object_store::row_text(r, schema, c);
             let key_columns: Vec<String> = serde_json::from_str(&g("key_columns")).unwrap_or_default();
             let pm_raw: Vec<Value> = serde_json::from_str(&g("property_map")).unwrap_or_default();
@@ -208,7 +208,7 @@ impl FunnelStore {
         let ds = self.query(&sql).await?;
         let schema = ds.schema.as_ref();
         let mut out = Vec::new();
-        for r in ds.iter() {
+        if let Some(r) = ds.iter().next() {
             let g = |c: &str| crate::object_store::row_text(r, schema, c);
             out.push(json!({
                 "id": g("id").parse::<i64>().unwrap_or(0),
@@ -269,7 +269,7 @@ impl FunnelStore {
     async fn count(&self, sql: &str) -> StoreResult<i64> {
         let ds = self.query(sql).await?;
         let schema = ds.schema.as_ref();
-        for r in ds.iter() {
+        if let Some(r) = ds.iter().next() {
             return Ok(crate::object_store::row_text(r, schema, "n").parse::<i64>().unwrap_or(0));
         }
         Ok(0)

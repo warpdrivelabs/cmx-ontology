@@ -18,3 +18,5 @@ tracing = { workspace = true }
 async-trait = { workspace = true }
 # O5 函数 Rhai runtime（过程式逃生舱；纯 Rust、沙箱化，契合 model 零 IO / 可 wasm 纪律）
 rhai = { workspace = true }
+# P2 草稿/发布：rev 内容指纹（xxh64；与 store-pg publish 同族哈希）
+xxhash-rust = { workspace = true }
