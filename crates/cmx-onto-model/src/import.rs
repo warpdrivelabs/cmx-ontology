@@ -89,8 +89,8 @@ fn entity_to_level_prop(
         }
     }
     let base_type = match card {
-        LinkCardinality::OneToOne => PropertyBaseType::Struct,
-        _ => PropertyBaseType::Array,
+        LinkCardinality::OneToMany | LinkCardinality::ManyToMany => PropertyBaseType::Array,
+        LinkCardinality::OneToOne | LinkCardinality::ManyToOne => PropertyBaseType::Struct,
     };
     let api = if role.is_empty() { child_api.clone() } else { role.to_string() };
     PropertyTypeDef {
@@ -133,6 +133,7 @@ fn child_relations(parent: &str, rels: &[Value]) -> Vec<(String, LinkCardinality
         }
         let card = match s(r, "cardinality").as_str() {
             "oneToOne" => LinkCardinality::OneToOne,
+            "manyToOne" => LinkCardinality::ManyToOne,
             "manyToMany" => LinkCardinality::ManyToMany,
             _ => LinkCardinality::OneToMany,
         };

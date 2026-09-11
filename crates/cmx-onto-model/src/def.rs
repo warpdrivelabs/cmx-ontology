@@ -259,13 +259,14 @@ pub fn validate_implements(
 
 // ───────────────────────────── 关系类型 ─────────────────────────────
 
-/// 关系基数。
+/// 关系基数（有向：oneToMany = 源 1 : 靶 N，manyToOne = 源 N : 靶 1）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum LinkCardinality {
     OneToOne,
     #[default]
     OneToMany,
+    ManyToOne,
     ManyToMany,
 }
 

@@ -355,6 +355,11 @@ mod tests {
     fn enum_serializes_camel_case() {
         assert_eq!(serde_json::to_value(TypeStatus::Experimental).unwrap(), json!("experimental"));
         assert_eq!(serde_json::to_value(LinkCardinality::OneToMany).unwrap(), json!("oneToMany"));
+        assert_eq!(serde_json::to_value(LinkCardinality::ManyToOne).unwrap(), json!("manyToOne"));
+        assert_eq!(
+            serde_json::from_value::<LinkCardinality>(json!("manyToOne")).unwrap(),
+            LinkCardinality::ManyToOne
+        );
         assert_eq!(serde_json::to_value(PropertyBaseType::MediaReference).unwrap(), json!("mediaReference"));
         assert_eq!(serde_json::to_value(FunctionRuntime::Feel).unwrap(), json!("feel"));
         assert_eq!(serde_json::to_value(FunctionKind::DerivedProperty).unwrap(), json!("derivedProperty"));

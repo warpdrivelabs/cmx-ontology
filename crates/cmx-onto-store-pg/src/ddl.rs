@@ -235,7 +235,7 @@ pub const DDL_COMMENTS: &[&str] = &[
     "COMMENT ON TABLE om_link_type IS '关系类型定义（对象类型间的关系；Search-Around 的路径）'",
     "COMMENT ON COLUMN om_link_type.api_name IS '稳定 API 名（唯一锚）'",
     "COMMENT ON COLUMN om_link_type.display_name IS '显示名'",
-    "COMMENT ON COLUMN om_link_type.cardinality IS '关系基数：oneToOne / oneToMany（默认）/ manyToMany'",
+    "COMMENT ON COLUMN om_link_type.cardinality IS '关系基数：oneToOne / oneToMany（默认）/ manyToOne / manyToMany'",
     "COMMENT ON COLUMN om_link_type.object_type_a IS 'A 端对象类型 apiName'",
     "COMMENT ON COLUMN om_link_type.object_type_b IS 'B 端对象类型 apiName'",
     "COMMENT ON COLUMN om_link_type.role_a IS 'A→B 方向角色名（如 places）'",
