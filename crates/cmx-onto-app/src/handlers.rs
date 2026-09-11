@@ -6,7 +6,7 @@
 use crate::engine::store;
 use crate::resp::{ApiResp, OntoError, Result};
 use crate::tenant::{current_display_user, current_tenant};
-use axum::extract::Path;
+use axum::extract::{Path, Query};
 use axum::Json;
 use cmx_onto_model::{
     ActionTypeDef, FunctionDef, InterfaceDef, LinkTypeDef, ObjectTypeDef, OntologyStore,
@@ -187,13 +187,43 @@ pub async fn delete_link_type(Path(api_name): Path<String>) -> Result<Json<ApiRe
 
 // ───────────────────────────── 接口 ─────────────────────────────
 
-pub async fn list_interfaces() -> Result<Json<ApiResp<Value>>> {
+/// GET /interfaces 查询参数（本体工作室实现挂接/继承添加的帮助弹框；全缺省 = 既有全量数组语义）。
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct InterfacesListQuery {
+    pub q: Option<String>,
+    pub page: Option<u32>,
+    pub size: Option<u32>,
+}
+
+/// GET /interfaces —— 清单：不传参返回全量数组（既有语义）；传 q/page/size 任一
+/// 返回分页信封 `{rows, total, page, size}`。
+pub async fn list_interfaces(Query(qp): Query<InterfacesListQuery>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
-    let metas = store()
-        .list_interfaces(&tenant)
+    let paged = qp.q.is_some() || qp.page.is_some() || qp.size.is_some();
+    if !paged {
+        let metas = store()
+            .list_interfaces(&tenant)
+            .await
+            .map_err(|e| OntoError::internal_error(format!("列出接口失败: {e}")))?;
+        return Ok(Json(ApiResp::ok(json!(metas))));
+    }
+    let page = qp.page.unwrap_or(1);
+    let size = qp.size.unwrap_or(50);
+    let (rows, total) = store()
+        .list_interfaces_paged(&tenant, qp.q.as_deref().unwrap_or(""), page, size)
         .await
-        .map_err(|e| OntoError::internal_error(format!("列出接口失败: {e}")))?;
-    Ok(Json(ApiResp::ok(json!(metas))))
+        .map_err(|e| OntoError::internal_error(format!("查询接口目录失败: {e}")))?;
+    let row_values: Vec<Value> = rows
+        .iter()
+        .map(|m| serde_json::to_value(m).unwrap_or(Value::Null))
+        .collect();
+    Ok(Json(ApiResp::ok(json!({
+        "rows": row_values,
+        "total": total,
+        "page": page,
+        "size": size,
+    }))))
 }
 
 pub async fn get_interface(Path(api_name): Path<String>) -> Result<Json<ApiResp<Value>>> {
@@ -228,13 +258,46 @@ pub async fn delete_interface(Path(api_name): Path<String>) -> Result<Json<ApiRe
 
 // ─────────────────────── 共享属性类型 ───────────────────────
 
-pub async fn list_shared_properties() -> Result<Json<ApiResp<Value>>> {
+/// GET /shared-properties 查询参数（本体工作室帮助弹框；全缺省 = 既有全量数组语义，旧调用方零感知）。
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SharedPropertiesListQuery {
+    pub q: Option<String>,
+    pub page: Option<u32>,
+    pub size: Option<u32>,
+}
+
+/// GET /shared-properties —— 清单：不传参返回全量轻量 meta 数组（既有语义）；
+/// 传 q/page/size 任一返回分页信封 `{rows, total, page, size}`（rows 为完整定义，
+/// 含 baseType/semanticType——选择器免逐个 GET 详情）。
+pub async fn list_shared_properties(
+    Query(qp): Query<SharedPropertiesListQuery>,
+) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
-    let metas = store()
-        .list_shared_properties(&tenant)
+    let paged = qp.q.is_some() || qp.page.is_some() || qp.size.is_some();
+    if !paged {
+        let metas = store()
+            .list_shared_properties(&tenant)
+            .await
+            .map_err(|e| OntoError::internal_error(format!("列出共享属性失败: {e}")))?;
+        return Ok(Json(ApiResp::ok(json!(metas))));
+    }
+    let page = qp.page.unwrap_or(1);
+    let size = qp.size.unwrap_or(50);
+    let (rows, total) = store()
+        .list_shared_properties_paged(&tenant, qp.q.as_deref().unwrap_or(""), page, size)
         .await
-        .map_err(|e| OntoError::internal_error(format!("列出共享属性失败: {e}")))?;
-    Ok(Json(ApiResp::ok(json!(metas))))
+        .map_err(|e| OntoError::internal_error(format!("查询共享属性目录失败: {e}")))?;
+    let row_values: Vec<Value> = rows
+        .iter()
+        .map(|sp| serde_json::to_value(sp).unwrap_or(Value::Null))
+        .collect();
+    Ok(Json(ApiResp::ok(json!({
+        "rows": row_values,
+        "total": total,
+        "page": page,
+        "size": size,
+    }))))
 }
 
 pub async fn get_shared_property(Path(api_name): Path<String>) -> Result<Json<ApiResp<Value>>> {

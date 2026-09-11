@@ -9,8 +9,8 @@ use chrono::Utc;
 use cmx_core::model::cell::DataValue;
 use cmx_core::model::data::dataset::{Row, Schema};
 use cmx_onto_model::{
-    ObjectTypeMeta, SceneViewDef, SceneViewMeta, SharedPropertyTypeDef, StoreError, StoreResult,
-    ViewMembers, ViewSource,
+    ObjectTypeMeta, SceneViewDef, SceneViewMeta, SharedPropertyTypeDef, SimpleTypeMeta, StoreError,
+    StoreResult, ViewMembers, ViewSource,
 };
 use serde_json::Value;
 
@@ -255,6 +255,148 @@ impl PgOntologyStore {
         let mut out = Vec::new();
         for row in ds.iter() {
             out.push(object_meta_from_row(row, s)?);
+        }
+        Ok((out, total))
+    }
+
+    // ─────────────────── 接口目录服务端过滤分页 ───────────────────
+
+    /// 接口目录分页查询（q 模糊匹配 apiName/displayName；page 从 1 起）。
+    /// 返回（轻量 meta 行, 总数）——实现挂接/继承添加的选择器使用；旧调用方走全量 `list_interfaces`。
+    pub async fn list_interfaces_paged(
+        &self,
+        _tenant: &str,
+        q: &str,
+        page: u32,
+        size: u32,
+    ) -> StoreResult<(Vec<SimpleTypeMeta>, i64)> {
+        let mut where_parts: Vec<String> = Vec::new();
+        let mut params: Vec<DataValue> = Vec::new();
+        if !q.trim().is_empty() {
+            params.push(DataValue::String(format!("%{}%", q.trim())));
+            where_parts.push(format!(
+                "(api_name ILIKE ${} OR display_name ILIKE ${})",
+                params.len(),
+                params.len()
+            ));
+        }
+        let where_sql = if where_parts.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", where_parts.join(" AND "))
+        };
+        let total_ds = self
+            .query(
+                &format!("SELECT COUNT(*) AS tc FROM om_interface{where_sql}"),
+                params.clone(),
+                "om_interface_paged_count",
+            )
+            .await?;
+        let total = total_ds
+            .iter()
+            .next()
+            .map(|r| get_i64(r, total_ds.schema.as_ref(), "tc"))
+            .unwrap_or(0);
+        let size = size.clamp(1, 500);
+        let page = page.max(1);
+        params.push(DataValue::Int(size as i64));
+        params.push(DataValue::Int(((page - 1) * size) as i64));
+        let ds = self
+            .query(
+                &format!(
+                    "SELECT api_name, display_name, updated_at \
+                     FROM om_interface{where_sql} \
+                     ORDER BY updated_at DESC LIMIT ${} OFFSET ${}",
+                    params.len() - 1,
+                    params.len()
+                ),
+                params,
+                "om_interface_paged",
+            )
+            .await?;
+        let s = ds.schema.as_ref();
+        let mut out = Vec::new();
+        for row in ds.iter() {
+            out.push(SimpleTypeMeta {
+                api_name: get_string(row, s, "api_name")?,
+                display_name: get_opt_string(row, s, "display_name").unwrap_or_default(),
+                updated_at: get_opt_ts(row, s, "updated_at"),
+                implements_by: None,
+                extends: None,
+            });
+        }
+        Ok((out, total))
+    }
+
+    // ─────────────────── 共享属性目录服务端过滤分页 ───────────────────
+
+    /// 共享属性目录分页查询（q 模糊匹配 apiName/displayName；page 从 1 起）。
+    /// 返回（完整定义行, 总数）——共享属性定义本身轻量，直接回全列，
+    /// 前端选择器无需再逐个 GET 详情。仅本体工作室帮助弹框使用；旧调用方走全量 `list_shared_properties`。
+    pub async fn list_shared_properties_paged(
+        &self,
+        _tenant: &str,
+        q: &str,
+        page: u32,
+        size: u32,
+    ) -> StoreResult<(Vec<SharedPropertyTypeDef>, i64)> {
+        let mut where_parts: Vec<String> = Vec::new();
+        let mut params: Vec<DataValue> = Vec::new();
+        if !q.trim().is_empty() {
+            params.push(DataValue::String(format!("%{}%", q.trim())));
+            where_parts.push(format!(
+                "(api_name ILIKE ${} OR display_name ILIKE ${})",
+                params.len(),
+                params.len()
+            ));
+        }
+        let where_sql = if where_parts.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", where_parts.join(" AND "))
+        };
+        let total_ds = self
+            .query(
+                &format!("SELECT COUNT(*) AS tc FROM om_shared_property{where_sql}"),
+                params.clone(),
+                "om_shared_property_paged_count",
+            )
+            .await?;
+        let total = total_ds
+            .iter()
+            .next()
+            .map(|r| get_i64(r, total_ds.schema.as_ref(), "tc"))
+            .unwrap_or(0);
+        let size = size.clamp(1, 500);
+        let page = page.max(1);
+        params.push(DataValue::Int(size as i64));
+        params.push(DataValue::Int(((page - 1) * size) as i64));
+        let ds = self
+            .query(
+                &format!(
+                    "SELECT api_name, display_name, base_type, semantic_type, description \
+                     FROM om_shared_property{where_sql} \
+                     ORDER BY updated_at DESC LIMIT ${} OFFSET ${}",
+                    params.len() - 1,
+                    params.len()
+                ),
+                params,
+                "om_shared_property_paged",
+            )
+            .await?;
+        let s = ds.schema.as_ref();
+        let mut out = Vec::new();
+        for row in ds.iter() {
+            out.push(SharedPropertyTypeDef {
+                api_name: get_string(row, s, "api_name")?,
+                display_name: get_opt_string(row, s, "display_name").unwrap_or_default(),
+                base_type: serde_json::from_value(Value::String(
+                    get_opt_string(row, s, "base_type").unwrap_or_else(|| "string".into()),
+                ))
+                .unwrap_or_default(),
+                semantic_type: get_opt_string(row, s, "semantic_type"),
+                description: get_opt_string(row, s, "description").unwrap_or_default(),
+            });
         }
         Ok((out, total))
     }
