@@ -35,3 +35,10 @@ api_keys = "cmx_sk_dev_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6:default"
 # —— 页面资产（[assets] 段：native 页面投递目录；四区本体设计工作台 + 本体图组件 vendor）——
 [assets]
 ui_native_dir = "../cmx-container/assets/onto/web/ui-native"
+
+# —— 本体出站/回调（O4-M3 dispatcher + flow-callback；dev 默认关闭，需要时取消注释）——
+# [onto]
+# 调 flowengine 的服务间 API Key：起实例请求带 X-API-Key（命中 flow [auth].api_keys 短路 JWT）
+# flow_api_key = "cmx_sk_dev_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6"
+# 审批完成回调的目标对象类型（POST /api/onto/v1/flow-callback 按 businessKey 回写其 reviewStatus）
+# flow_callback_object_type = "Supplier"

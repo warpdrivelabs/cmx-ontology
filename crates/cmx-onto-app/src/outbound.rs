@@ -12,7 +12,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 const DEFAULT_FLOW_BASE: &str = "http://127.0.0.1:8091";
-const FLOW_INSTANCES_PATH: &str = "/api/flow/v1/instances";
+const FLOW_INSTANCES_PATH: &str = "/api/flow/v1/instances/start";
 const DEFAULT_REPORT_BASE: &str = "http://127.0.0.1:8092";
 
 /// 进程级共享 HTTP 客户端（连接复用 + 统一超时，避免慢下游拖垮 dispatcher）。
@@ -144,7 +144,7 @@ pub async fn post_webhook(url: &str, payload: &Value) -> Result<Value, String> {
     }
 }
 
-/// 触发流程：POST `{flow_base}/api/flow/v1/instances` `{definitionKey, variables}`（X-Tenant 隔离）。
+/// 触发流程：POST `{flow_base}/api/flow/v1/instances/start` `{definitionKey, variables}`（X-Tenant 隔离）。
 /// 返回实例 id（信封 `{code,data}` 与裸对象都兼容）。
 pub async fn start_business_process(tenant: &str, def_key: &str, payload: &Value) -> Result<String, String> {
     let url = format!("{}{}", flow_base(), FLOW_INSTANCES_PATH);
@@ -152,6 +152,13 @@ pub async fn start_business_process(tenant: &str, def_key: &str, payload: &Value
     // 副作用 payload 若带 businessKey，则透传为流程业务键（便于回查/幂等/单据关联）。
     if let Some(bk) = payload.get("businessKey").and_then(|v| v.as_str()) {
         body["businessKey"] = json!(bk);
+    }
+    // 副作用 payload 若带 orgId，则透传为发起组织（缺省时 flow 引擎回退发起人主属组织；
+    // 发起闸按 (defKey, orgId) 解析审批定义，显式传 orgId 最稳）。
+    if let Some(org) = payload.get("orgId").and_then(|v| v.as_str()) {
+        if !org.trim().is_empty() {
+            body["orgId"] = json!(org.trim());
+        }
     }
     let mut rb = client()
         .post(&url)
@@ -190,13 +197,15 @@ pub async fn start_business_process(tenant: &str, def_key: &str, payload: &Value
 }
 
 /// 列 flowengine 已发布流程定义（设计台「触发流程」副作用的可视化选择器数据源）。
-/// 返回 flow `GET /api/flow/v1/definitions` 的 data（通常为 `[{key,name,...}]`）。flow 不可达即 Err。
+/// flow 定义列表是 `POST /definitions/list`（无 GET 路由）；返回 data（通常为 `[{key,name,...}]`）。
+/// flow 不可达即 Err。
 pub async fn list_flow_definitions(tenant: &str) -> Result<Value, String> {
-    let url = format!("{}/api/flow/v1/definitions", flow_base());
+    let url = format!("{}/api/flow/v1/definitions/list", flow_base());
     let mut rb = client()
-        .get(&url)
+        .post(&url)
         .header("X-Tenant", tenant)
-        .header("X-Onto-Source", "cmx-ontology");
+        .header("X-Onto-Source", "cmx-ontology")
+        .json(&json!({}));
     if let Some(key) = flow_api_key() {
         rb = rb.header("X-API-Key", key);
     }

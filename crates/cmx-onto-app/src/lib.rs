@@ -18,6 +18,7 @@ pub mod function_handlers;
 pub mod function_runtime;
 pub mod policy_handlers;
 pub mod funnel_handlers;
+pub mod flow_callback_handlers;
 pub mod import_handlers;
 pub mod osdk_handlers;
 pub mod events;
@@ -224,6 +225,8 @@ where
         // —— DOC/DCT 反向导入 ——
         .route("/import/doc", post(import_handlers::import_doc))
         .route("/import/dct", post(import_handlers::import_dct))
+        // —— 流程审批结果回调（flowengine webhook → 回写对象状态；鉴权走 X-API-Key 服务身份）——
+        .route("/flow-callback", post(flow_callback_handlers::receive))
         // —— OSDK 代码生成 ——
         .route("/osdk/typescript", get(osdk_handlers::typescript_sdk))
         // —— 建模台 / 监控数据源 ——

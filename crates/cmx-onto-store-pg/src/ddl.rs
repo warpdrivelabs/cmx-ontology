@@ -165,6 +165,8 @@ pub const DDL_STATEMENTS: &[&str] = &[
         last_report     JSONB,
         created_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
     )"#,
+    // 跨库漏斗：源数据源 db_id（可空=本体库 onto_pg）；读源在该库执行，写 oo_/隔离区仍走本体库
+    "ALTER TABLE om_source_mapping ADD COLUMN IF NOT EXISTS source_db_id VARCHAR(64)",
     // —— O3 隔离区：Funnel 校验不通过的源行（不污染主对象库）——
     r#"CREATE TABLE IF NOT EXISTS oo_quarantine (
         id              BIGSERIAL    PRIMARY KEY,

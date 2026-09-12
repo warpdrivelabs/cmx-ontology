@@ -21,6 +21,8 @@ pub struct SourceMapping {
     pub property_map: Vec<(String, String)>,
     /// 必填对象属性 apiName（映射后为空即违规）。
     pub required: Vec<String>,
+    /// 源数据源 db_id（可空 = 本体库 onto_pg）；读源在该库执行，写 oo_/隔离区仍走本体库。
+    pub source_db_id: Option<String>,
 }
 
 /// 一条校验违规。

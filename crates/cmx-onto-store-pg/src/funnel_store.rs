@@ -37,13 +37,14 @@ impl FunnelStore {
             if v.is_array() { v.to_string() } else { "[]".into() }
         };
         let title = m.get("titleColumn").and_then(|v| v.as_str());
+        let source_db_id = m.get("sourceDbId").and_then(|v| v.as_str()).map(|s| s.trim().to_string());
         execute_sql_with_params(
             &self.db_id,
             None,
-            "INSERT INTO om_source_mapping (object_type, source_query, key_columns, title_column, property_map, required, created_at) \
-             VALUES ($1,$2,$3,$4,$5,$6, now()) \
+            "INSERT INTO om_source_mapping (object_type, source_query, key_columns, title_column, property_map, required, source_db_id, created_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7, now()) \
              ON CONFLICT (object_type) DO UPDATE SET source_query=EXCLUDED.source_query, key_columns=EXCLUDED.key_columns, \
-             title_column=EXCLUDED.title_column, property_map=EXCLUDED.property_map, required=EXCLUDED.required",
+             title_column=EXCLUDED.title_column, property_map=EXCLUDED.property_map, required=EXCLUDED.required, source_db_id=EXCLUDED.source_db_id",
             SqlParams::DataValues(vec![
                 DataValue::String(object_type.clone()),
                 DataValue::String(source_query),
@@ -51,6 +52,7 @@ impl FunnelStore {
                 match title { Some(t) if !t.is_empty() => DataValue::String(t.to_string()), _ => DataValue::Null },
                 DataValue::Json(jarr("propertyMap")),
                 DataValue::Json(jarr("required")),
+                match source_db_id { Some(d) if !d.is_empty() => DataValue::String(d), _ => DataValue::Null },
             ]),
         )
         .await
@@ -61,7 +63,7 @@ impl FunnelStore {
     /// 列出映射（原样 JSON）。
     pub async fn list_mappings(&self) -> StoreResult<Value> {
         let ds = self
-            .query("SELECT object_type, source_query, key_columns, title_column, property_map, required, last_sync_at, last_report \
+            .query("SELECT object_type, source_query, key_columns, title_column, property_map, required, source_db_id, last_sync_at, last_report \
                     FROM om_source_mapping ORDER BY object_type")
             .await?;
         let schema = ds.schema.as_ref();
@@ -76,6 +78,7 @@ impl FunnelStore {
                 "titleColumn": opt("title_column"),
                 "propertyMap": jparse(&g("property_map")),
                 "required": jparse(&g("required")),
+                "sourceDbId": opt("source_db_id"),
                 "lastSyncAt": opt("last_sync_at"),
                 "lastReport": jparse(&g("last_report")),
             }));
@@ -99,7 +102,7 @@ impl FunnelStore {
     async fn load_mapping(&self, object_type: &str) -> StoreResult<Option<SourceMapping>> {
         let ds = self
             .query(&format!(
-                "SELECT object_type, source_query, key_columns, title_column, property_map, required \
+                "SELECT object_type, source_query, key_columns, title_column, property_map, required, source_db_id \
                  FROM om_source_mapping WHERE object_type = '{}'",
                 object_type.replace('\'', "''")
             ))
@@ -119,6 +122,7 @@ impl FunnelStore {
                 .collect();
             let required: Vec<String> = serde_json::from_str(&g("required")).unwrap_or_default();
             let tc = g("title_column");
+            let sd = g("source_db_id");
             return Ok(Some(SourceMapping {
                 object_type: g("object_type"),
                 source_query: g("source_query"),
@@ -126,6 +130,7 @@ impl FunnelStore {
                 title_column: if tc.is_empty() || tc == "Null" { None } else { Some(tc) },
                 property_map,
                 required,
+                source_db_id: if sd.is_empty() || sd == "Null" { None } else { Some(sd) },
             }));
         }
         Ok(None)
@@ -147,8 +152,11 @@ impl FunnelStore {
         )
         .await;
 
-        // 1) 读源行 → JSON 对象数组
-        let ds = self.query(&mapping.source_query).await?;
+        // 1) 读源行 → JSON 对象数组（sourceDbId 指向业务库时跨库读源；写 oo_/隔离区仍走本体库）
+        let source_db = mapping.source_db_id.clone().unwrap_or_else(|| self.db_id.clone());
+        let ds = query_sql_with_params(&source_db, None, &mapping.source_query, SqlParams::DataValues(vec![]), "funnel_src")
+            .await
+            .map_err(|e| StoreError::Backend(format!("读源失败（db={source_db}）: {e}")))?;
         let schema = ds.schema.as_ref();
         let mut rows_json = Vec::new();
         for r in ds.iter() {
