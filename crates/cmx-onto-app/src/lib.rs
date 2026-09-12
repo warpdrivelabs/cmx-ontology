@@ -7,6 +7,9 @@
 //!
 //! 两壳复用同一 handler + 同一路由表，零业务漂移。
 
+// openapi.rs 的大 JSON 宏在 clippy 下超默认递归深度（128）——提高到 512。
+#![recursion_limit = "512"]
+
 pub mod auth;
 pub mod dashboard;
 pub mod engine;
@@ -172,7 +175,7 @@ where
             "/object-sets/aggregate",
             post(object_handlers::aggregate_object_set),
         )
-        // —— O4 动作引擎：执行 / 试算 / 审计 ——
+        // —— O4 动作引擎：执行 / 试算 / 批量 / 审计 ——
         .route(
             "/action-types/{api_name}/execute",
             post(action_handlers::execute_action),
@@ -181,6 +184,8 @@ where
             "/action-types/{api_name}/dry-run",
             post(action_handlers::dry_run_action),
         )
+        // 批量执行（P1-3；固定路径无路径参数，apiName 入 body——AGENTS §四.6）
+        .route("/action-types/execute-batch", post(action_handlers::execute_batch))
         .route("/action-logs", get(action_handlers::list_action_logs))
         .route("/action-outbox", get(action_handlers::list_action_outbox))
         .route("/action-outbox/config", get(action_handlers::outbox_config))

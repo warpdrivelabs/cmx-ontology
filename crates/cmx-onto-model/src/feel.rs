@@ -99,7 +99,11 @@ fn tokenize(src: &str) -> Result<Vec<Tok>> {
                 if i + 1 < n && b[i + 1] == '=' { out.push(Tok::Ge); i += 2; }
                 else { out.push(Tok::Gt); i += 1; }
             }
-            '=' => { out.push(Tok::Eq); i += 1; }
+            '=' => {
+                // `==` 与 `=` 同为 Eq（FEEL 标准用单 `=`；双等号历史上被词法成两个 Eq 致语法错误，20260912 修复）
+                if i + 1 < n && b[i + 1] == '=' { out.push(Tok::Eq); i += 2; }
+                else { out.push(Tok::Eq); i += 1; }
+            }
             '!' => {
                 if i + 1 < n && b[i + 1] == '=' { out.push(Tok::Ne); i += 2; }
                 else { return Err(FeelError::Syntax("非法记号 '!'（应为 !=）".into())); }
@@ -614,6 +618,9 @@ mod tests {
         assert_eq!(ev("amount > 0", json!({"amount": 5})), json!(true));
         assert_eq!(ev("amount > 0", json!({"amount": -1})), json!(false));
         assert_eq!(ev("a + b * 2", json!({"a": 1, "b": 3})), json!(7.0));
+        // `==` 等价单 `=`（20260912 词法修复：此前 `==` 被拆成两个 Eq 记号致语法错误）
+        assert_eq!(ev("status == 'open'", json!({"status": "open"})), json!(true));
+        assert_eq!(ev("status == 'open'", json!({"status": "closed"})), json!(false));
     }
 
     #[test]

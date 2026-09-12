@@ -104,10 +104,74 @@ impl ActionExecutor {
         Ok(ApplyOutcome { applied: edits.len(), log_id, effects: side_effects.len() })
     }
 
+    /// 批量执行（P1-3 execute-batch）：**同一事务**逐 item 应用，任一 item 失败**全回滚**。
+    ///
+    /// 审计语义：成功批次落一条批审计（edits 为全 item 编辑平铺、params 记 item 数）；
+    /// 失败批次回滚后落一条 status=failed 批审计（error 含失败 item 序号与原因），成功项不逐条落
+    /// （已回滚，无业务痕迹可落）。
+    pub async fn apply_batch(
+        &self,
+        action: &str,
+        items: &[(Value, Vec<ObjectEdit>, Vec<SideEffect>)],
+        actor: Option<&str>,
+    ) -> StoreResult<ApplyOutcome> {
+        let manager = get_default_pg_db_manager();
+        let txn_ctx = manager.get_transaction_context();
+        let txn_id = txn_ctx
+            .begin(&self.db_id)
+            .await
+            .map_err(|e| StoreError::Backend(format!("开启事务失败: {e}")))?;
+
+        let all_edits: Vec<ObjectEdit> =
+            items.iter().flat_map(|(_, e, _)| e.iter().cloned()).collect();
+        let total_effects: usize = items.iter().map(|(_, _, fx)| fx.len()).sum();
+        let batch_params = serde_json::json!({ "batch": true, "items": items.len() });
+
+        macro_rules! abort_batch {
+            ($note:expr, $err:expr) => {{
+                let err = $err;
+                let _ = txn_ctx.rollback(&txn_id).await;
+                let msg = format!("批量执行失败（{}）：{err}", $note);
+                let _ = self
+                    .write_log(None, action, &batch_params, &all_edits, false, "failed", Some(&msg), actor)
+                    .await;
+                return Err(StoreError::Backend(msg));
+            }};
+        }
+
+        for (idx, (_, edits, _)) in items.iter().enumerate() {
+            for e in edits {
+                if let Err(err) = self.apply_one(&txn_id, e).await {
+                    abort_batch!(format!("第 {} 项", idx + 1), err);
+                }
+            }
+        }
+        let log_id = match self
+            .write_log(Some(&txn_id), action, &batch_params, &all_edits, false, "committed", None, actor)
+            .await
+        {
+            Ok(id) => id,
+            Err(err) => abort_batch!("审计写入", err),
+        };
+        for (_, _, side_effects) in items {
+            for fx in side_effects {
+                if let Err(err) = self.insert_outbox(&txn_id, action, log_id, fx).await {
+                    abort_batch!("Outbox 写入", err);
+                }
+            }
+        }
+        txn_ctx
+            .commit(&txn_id)
+            .await
+            .map_err(|e| StoreError::Backend(format!("提交事务失败: {e}")))?;
+        Ok(ApplyOutcome { applied: all_edits.len(), log_id, effects: total_effects })
+    }
+
     /// dry-run 预检：仅校验标识安全，不触库。
     fn precheck(e: &ObjectEdit) -> StoreResult<()> {
         match e {
             ObjectEdit::CreateObject { object_type, .. }
+            | ObjectEdit::UpsertObject { object_type, .. }
             | ObjectEdit::ModifyObject { object_type, .. }
             | ObjectEdit::DeleteObject { object_type, .. } => {
                 object_table(object_type)?;
@@ -143,6 +207,58 @@ impl ActionExecutor {
                     ],
                 )
                 .await
+            }
+            ObjectEdit::UpsertObject { object_type, pk, title, set } => {
+                // createOrModifyObject：存在 → 等同 modify（set 合并）；不存在 → 全量落（title 缺省 pk）
+                let t = object_table(object_type)?;
+                let existing = self.read_props_in_txn(txn_id, &t, pk).await?;
+                match existing {
+                    None => {
+                        let props = obj_or_empty(set).as_object().cloned().unwrap_or_default();
+                        let title = if title.is_empty() { pk.clone() } else { title.clone() };
+                        let sql = format!(
+                            "INSERT INTO {t} (pk, title, props, created_at, updated_at) \
+                             VALUES ($1, $2, $3, $4, $4)"
+                        );
+                        self.txn_exec(
+                            txn_id,
+                            &sql,
+                            vec![
+                                DataValue::String(pk.clone()),
+                                DataValue::String(title),
+                                DataValue::Json(Value::Object(props).to_string()),
+                                DataValue::DateTime(Utc::now()),
+                            ],
+                        )
+                        .await
+                    }
+                    Some(mut cur) => {
+                        if let Some(patch) = set.as_object() {
+                            for (k, v) in patch {
+                                cur.insert(k.clone(), v.clone());
+                            }
+                        }
+                        let merged = Value::Object(cur);
+                        let title = if title.is_empty() {
+                            title_from(&merged).unwrap_or_else(|| pk.clone())
+                        } else {
+                            title.clone()
+                        };
+                        let sql =
+                            format!("UPDATE {t} SET props = $1, title = $2, updated_at = $3 WHERE pk = $4");
+                        self.txn_exec(
+                            txn_id,
+                            &sql,
+                            vec![
+                                DataValue::Json(merged.to_string()),
+                                DataValue::String(title),
+                                DataValue::DateTime(Utc::now()),
+                                DataValue::String(pk.clone()),
+                            ],
+                        )
+                        .await
+                    }
+                }
             }
             ObjectEdit::ModifyObject { object_type, pk, set } => {
                 let t = object_table(object_type)?;
@@ -495,6 +611,9 @@ pub fn edits_to_json(edits: &[ObjectEdit]) -> Value {
             .map(|e| match e {
                 ObjectEdit::CreateObject { object_type, pk, title, properties } => json!({
                     "op": "createObject", "objectType": object_type, "pk": pk, "title": title, "properties": properties
+                }),
+                ObjectEdit::UpsertObject { object_type, pk, title, set } => json!({
+                    "op": "createOrModifyObject", "objectType": object_type, "pk": pk, "title": title, "set": set
                 }),
                 ObjectEdit::ModifyObject { object_type, pk, set } => json!({
                     "op": "modifyObject", "objectType": object_type, "pk": pk, "set": set
