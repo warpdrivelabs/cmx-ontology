@@ -87,6 +87,7 @@ pub fn config_snapshot() -> Value {
         "reportUrl": report_base(),
         "reportApiKeySet": report_api_key().is_some(),
         "webhookAllow": webhook_allow(),
+        "webhookHeadersSet": !webhook_headers().is_empty(),
     })
 }
 
@@ -117,6 +118,19 @@ fn host_allowed(url: &str, allow: &[String]) -> bool {
     }
 }
 
+/// webhook 附加请求头（`ONTO_WEBHOOK_HEADERS` / `onto.webhook_headers`，JSON 对象字符串；
+/// 如 `{"X-API-Key":"…","db_id":"fico-db"}`——服务间鉴权与目标侧路由头统一在此注入）。
+pub fn webhook_headers() -> Vec<(String, String)> {
+    let raw = cfg("ONTO_WEBHOOK_HEADERS", "onto.webhook_headers", "");
+    let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&raw) else {
+        return Vec::new();
+    };
+    map.into_iter()
+        .filter(|(_, v)| v.is_string() || v.is_number())
+        .map(|(k, v)| (k, v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())))
+        .collect()
+}
+
 /// 投递 webhook：POST payload JSON 到 target（受白名单约束）。2xx→Ok；否则 Err。
 pub async fn post_webhook(url: &str, payload: &Value) -> Result<Value, String> {
     let allow = webhook_allow();
@@ -125,11 +139,14 @@ pub async fn post_webhook(url: &str, payload: &Value) -> Result<Value, String> {
             "webhook 目标 {url} 不在白名单 {allow:?}（SSRF 护栏；配 ONTO_WEBHOOK_ALLOW 放行）"
         ));
     }
-    let resp = client()
+    let mut req = client()
         .post(url)
         .header("X-Onto-Source", "cmx-ontology")
-        .json(payload)
-        .send()
+        .json(payload);
+    for (k, v) in webhook_headers() {
+        req = req.header(k.as_str(), v.as_str());
+    }
+    let resp = req.send()
         .await
         .map_err(|e| format!("webhook 请求失败: {e}"))?;
     let status = resp.status();

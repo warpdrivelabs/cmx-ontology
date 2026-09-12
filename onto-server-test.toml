@@ -30,6 +30,9 @@ flow_api_key = "cmx_sk_dev_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6"
 # 审批完成回调的目标对象类型（POST /api/onto/v1/flow-callback 按 businessKey 回写其 reviewStatus）
 flow_callback_object_type = "Supplier"
 
+# webhook 出站附加头（方向二：本体动作 → MDM CR webhook-create；服务间鉴权 + 业务库路由）
+webhook_headers = '{"X-API-Key":"cmx_sk_dev_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6","db_id":"fico-db"}'
+
 [auth]
 mode = "jwt"                # 生产务必 jwt（off 模式租户取 X-Tenant 头，越权隐患；且委托令牌无法验签，用户身份断链）
 tenancy = "single"

@@ -222,6 +222,8 @@ where
             "/funnel/pipeline-status/{object_type}",
             get(funnel_handlers::pipeline_status),
         )
+        // —— 主数据事件推送（MDM 分发引擎 webhook 订阅入口；鉴权走 X-API-Key 服务身份）——
+        .route("/funnel/push", post(funnel_handlers::funnel_push))
         // —— DOC/DCT 反向导入 ——
         .route("/import/doc", post(import_handlers::import_doc))
         .route("/import/dct", post(import_handlers::import_dct))

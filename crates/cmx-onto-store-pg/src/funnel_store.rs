@@ -68,7 +68,7 @@ impl FunnelStore {
             .await?;
         let schema = ds.schema.as_ref();
         let mut out = Vec::new();
-        if let Some(r) = ds.iter().next() {
+        for r in ds.iter() {
             let g = |c: &str| crate::object_store::row_text(r, schema, c);
             let opt = |c: &str| { let s = g(c); if s.is_empty() || s == "Null" { Value::Null } else { Value::String(s) } };
             out.push(json!({

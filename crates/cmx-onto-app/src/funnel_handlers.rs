@@ -83,3 +83,70 @@ pub async fn pipeline_status(Path(object_type): Path<String>) -> Result<Json<Api
         .map_err(|e| OntoError::internal_error(format!("查管道状态失败: {e}")))?;
     Ok(Json(ApiResp::ok(out)))
 }
+
+/// 表名词边界匹配：`cm_supplier` 不得命中 `cm_supplier_xxx`（后者是非字母下划线继续）。
+fn query_touches_table(source_query: &str, dict_code: &str) -> bool {
+    let table = format!("cm_{dict_code}");
+    let mut from = 0usize;
+    while let Some(pos) = source_query[from..].find(&table) {
+        let abs = from + pos + table.len();
+        let next = source_query[abs..].chars().next();
+        if !next.is_some_and(|c| c.is_ascii_alphabetic() || c == '_') {
+            return true;
+        }
+        from = abs;
+    }
+    false
+}
+
+/// POST /funnel/push —— 主数据事件推送（MDM 分发引擎 webhook 订阅入口）。
+///
+/// 收到激活事件后按 `dictCode` 定位命中映射的漏斗（sourceQuery 含 `cm_{dict_code}`）并自动
+/// 全量同步——主数据变更免手动 sync。body 宽容：只消费 `dictCode`/`dict_code`，其余透传忽略；
+/// `dictCode` 缺省时全量同步所有映射。幂等可重入（sync 本身按 pk upsert）。
+pub async fn funnel_push(Json(body): Json<Value>) -> Result<Json<ApiResp<Value>>> {
+    let dict_code = body
+        .get("dictCode")
+        .or_else(|| body.get("dict_code"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let mappings = funnel()
+        .list_mappings()
+        .await
+        .map_err(|e| OntoError::internal_error(format!("枚举映射失败: {e}")))?;
+    let tenant = current_tenant();
+    let mut synced = Vec::new();
+    // list_mappings 透传 JSON 数组；命中判定用 camelCase 键。
+    for m in mappings.as_array().unwrap_or(&Vec::new()).clone() {
+        let object_type = m
+            .get("objectType")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if object_type.is_empty() {
+            continue;
+        }
+        let source_query = m
+            .get("sourceQuery")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let hit = dict_code
+            .as_deref()
+            .is_none_or(|dc| query_touches_table(source_query, dc));
+        if !hit {
+            continue;
+        }
+        let report = funnel()
+            .run_full_sync(&tenant, &object_type)
+            .await
+            .map_err(|e| OntoError::business_error(format!("推送同步 {object_type} 失败: {e}")))?;
+        synced.push(json!({
+            "objectType": object_type,
+            "read": report.read,
+            "written": report.written,
+            "quarantined": report.quarantined,
+        }));
+    }
+    tracing::info!(dict_code = ?dict_code, synced = synced.len(), "funnel push 已处理");
+    Ok(Json(ApiResp::ok(json!({ "dictCode": dict_code, "synced": synced }))))
+}
