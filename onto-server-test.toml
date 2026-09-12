@@ -1,0 +1,52 @@
+# cmx-onto-server 开发配置（真机开发库）。用法：CONFIG_FILE=onto-server-dev.toml cargo run -p cmx-onto-server
+#
+# 指向团队开发库 192.168.157.46:5432/cmx_fico（与 flow/rules 复用同库；om_* 前缀不冲突）。
+[server]
+host = "0.0.0.0"
+port = 8097
+log_dir = "logs"
+log_level = "info"
+graceful_timeout_secs = 10
+
+[[databases]]
+db_id = "onto_pg"
+db_name = "本体平台库"
+db_type = "postgres"
+db_url = "postgres://postgres:Pg%40Pansoft_0909@192.168.137.111:5432/cmx_onto"
+default = true
+
+# 业务库（漏斗跨库读源：om_source_mapping.source_db_id = "fico-db" 时 source_query 在该库执行；
+# 写 oo_*/隔离区仍走本体库 onto_pg）
+[[databases]]
+db_id = "fico-db"
+db_name = "业务库-采购演示"
+db_type = "postgres"
+db_url = "postgres://postgres:Pg%40Pansoft_0909@192.168.137.111:5432/fico"
+
+# —— 本体出站/回调（O4-M3 dispatcher + flow-callback）——
+[onto]
+# 调 flowengine 的服务间 API Key：起实例请求带 X-API-Key（命中 flow [auth].api_keys 短路 JWT）
+flow_api_key = "cmx_sk_dev_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6"
+# 审批完成回调的目标对象类型（POST /api/onto/v1/flow-callback 按 businessKey 回写其 reviewStatus）
+flow_callback_object_type = "Supplier"
+
+[auth]
+mode = "jwt"                # 生产务必 jwt（off 模式租户取 X-Tenant 头，越权隐患；且委托令牌无法验签，用户身份断链）
+tenancy = "single"
+jwt_alg = "HS256"           # 与平台 JwtConfig 算法一致
+
+# ★ 委托令牌始终验签，此密钥必须 = 平台签发 JWT 的密钥。
+#   平台真源：cmx-container 未配 [auth.jwt] 段 → 用 JwtConfig 默认
+#   (crates/libs/cmx-infra/cmx-auth/src/config.rs 的 JwtConfig 默认 secret)。
+#   若平台 dev-local.toml 配了自定义 auth.jwt.secret，改成那个值。
+jwt_secret = "a7k9m2p4x8q1w5e3r6t0y7u2i9o4p1"
+jwt_tenant_claim = "tenant"
+jwt_roles_claim = "roles"
+
+# 服务间 API Key（key:tenant，逗号分隔）——接受门户反代注入的 X-API-Key（门户 outgoing_api_key）。
+# 门户经 OntoProxy 转发 /api/onto/* 时带此 key + X-Delegated-User-Token（用户身份），onto 据此建 scope。
+api_keys = "cmx_sk_dev_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6:default"
+
+# —— 页面资产（[assets] 段：native 页面投递目录；四区本体设计工作台 + 本体图组件 vendor）——
+[assets]
+ui_native_dir = "../cmx-container/assets/onto/web/ui-native"
