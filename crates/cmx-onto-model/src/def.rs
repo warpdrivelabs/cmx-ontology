@@ -539,7 +539,7 @@ impl FunctionDef {
 
 // ─────────────────────── 清单 / 元数据 / 版本 ───────────────────────
 
-/// 对象类型清单项（列表用，不含完整属性体）。
+/// 对象类型清单项（含完整属性体——manifest 即全量形状，消费方免单独拉详情）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ObjectTypeMeta {
@@ -548,6 +548,9 @@ pub struct ObjectTypeMeta {
     pub status: TypeStatus,
     pub primary_key: String,
     pub property_count: u32,
+    /// 完整属性定义（清单富化：选中/展示免二次请求 GET /object-types/{name}）。
+    #[serde(default)]
+    pub properties: Vec<PropertyTypeDef>,
     /// DAM 三级分类（清单富化：前端 explorer 免拉全定义即可按 DAM 分组）。
     #[serde(default)]
     pub dam: DamRef,

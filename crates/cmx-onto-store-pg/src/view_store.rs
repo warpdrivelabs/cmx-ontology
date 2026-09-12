@@ -241,7 +241,7 @@ impl PgOntologyStore {
             .query(
                 &format!(
                     "SELECT api_name, display_name, status, primary_key, \
-                     jsonb_array_length(properties) AS pc, dam, doc_type, version, updated_at \
+                     jsonb_array_length(properties) AS pc, properties, dam, doc_type, version, updated_at \
                      FROM om_object_type{where_sql} \
                      ORDER BY updated_at DESC LIMIT ${} OFFSET ${}",
                     params.len() - 1,
@@ -476,6 +476,10 @@ fn object_meta_from_row(row: &Row, s: &Schema) -> StoreResult<ObjectTypeMeta> {
         status: parse_status(row, s),
         primary_key: get_opt_string(row, s, "primary_key").unwrap_or_default(),
         property_count: get_i64(row, s, "pc") as u32,
+        properties: crate::store::get_json(row, s, "properties")
+            .ok()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default(),
         dam: get_opt_json(row, s, "dam")
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_default(),

@@ -4,7 +4,7 @@
 pub mod action_exec;
 pub mod compile;
 pub mod ddl;
-pub mod draft_store;
+pub mod snapshot_store;
 pub mod funnel_store;
 pub mod link_resolver;
 pub mod object_store;

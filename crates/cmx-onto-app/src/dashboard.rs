@@ -76,7 +76,7 @@ const PAGE: &str = r##"<!doctype html>
   <h1>🕸 cmx-ontology</h1>
   <span class="sub">Palantir 式企业本体平台 · 建模控制台 (O1)</span>
   <span class="spacer"></span>
-  <button id="publishBtn" class="primary">📦 发布本体</button>
+  <button id="publishBtn" class="primary">📦 存档本体</button>
   <button id="themeBtn">🌓 主题</button>
   <button id="refreshBtn">↻ 刷新</button>
 </header>
@@ -134,7 +134,7 @@ const PAGE: &str = r##"<!doctype html>
   </div>
 
   <div class="card">
-    <h2>🏷 发布版本 <span class="badge" id="verBadge"></span></h2>
+    <h2>🏷 存档版本 <span class="badge" id="verBadge"></span></h2>
     <div id="verList"></div>
   </div>
 </main>
@@ -178,7 +178,7 @@ async function loadStats(){
   const tiles=[
     ['对象类型',s.objectTypes,'accent'],['关系类型',s.linkTypes,''],['接口',s.interfaces,''],
     ['共享属性',s.sharedProperties,''],['动作类型',s.actionTypes,''],['函数',s.functions,''],
-    ['已发布版本',s.publishedVersion,'accent'],
+    ['最新存档版本',s.publishedVersion,'accent'],
   ];
   $('tiles').innerHTML=tiles.map(t=>'<div class="tile '+t[2]+'"><div class="n">'+t[1]+'</div><div class="l">'+t[0]+'</div></div>').join('');
 }
@@ -208,7 +208,7 @@ async function loadLinkTypes(){
 async function loadVersions(){
   const list=await api('/versions');
   $('verBadge').textContent=list.length+' 个版本';
-  if(!list.length){$('verList').innerHTML='<div class="empty">尚未发布。点右上「发布本体」生成不可变快照。</div>';return;}
+  if(!list.length){$('verList').innerHTML='<div class="empty">尚无存档。点右上「存档本体」生成检查点快照。</div>';return;}
   $('verList').innerHTML='<table><thead><tr><th>版本</th><th>rev</th><th>摘要</th><th>发布人</th><th>时间</th></tr></thead><tbody>'+
     list.map(v=>'<tr><td>v'+v.version+'</td><td><code>'+esc(v.rev)+'</code></td><td>'+esc(v.summary)+'</td><td>'+esc(v.publishedBy||'-')+'</td><td class="muted">'+esc((v.publishedAt||'').replace('T',' ').slice(0,19))+'</td></tr>').join('')+'</tbody></table>';
 }
@@ -231,9 +231,9 @@ $('lt_save').onclick=async()=>{
   }catch(e){toast(e.message,'err');}
 };
 $('publishBtn').onclick=async()=>{
-  const summary=prompt('发布摘要（本次发布的说明）:','');
+  const summary=prompt('存档说明（本次存档的说明）:','');
   if(summary===null)return;
-  try{const m=await api('/publish',{method:'POST',body:JSON.stringify({summary})});toast('已发布 v'+m.version+' (rev '+m.rev+')','ok');refresh();}catch(e){toast(e.message,'err');}
+  try{const m=await api('/snapshots',{method:'POST',body:JSON.stringify({summary})});toast(m.deduped?'内容与上次存档一致（v'+m.version+'）':'已存档 v'+m.version+' (rev '+m.rev+')','ok');refresh();}catch(e){toast(e.message,'err');}
 };
 $('refreshBtn').onclick=refresh;
 $('themeBtn').onclick=()=>{const h=document.documentElement;const t=h.getAttribute('data-theme')==='dark'?'light':'dark';h.setAttribute('data-theme',t);localStorage.setItem('onto-theme',t);};

@@ -122,13 +122,39 @@ pub async fn validate_object_type(Json(def): Json<ObjectTypeDef>) -> Result<Json
 }
 
 /// DELETE /object-types/{apiName} —— 删除对象类型。
+/// 安全网：①被引用（关系/动作编辑/场景成员）→ 409 出引用清单；②删除前自动存档（可撤销）。
 pub async fn delete_object_type(Path(api_name): Path<String>) -> Result<Json<ApiResp<Value>>> {
+    let refs = store()
+        .object_type_references(&api_name)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("引用检查失败: {e}")))?;
+    if !refs.is_empty() {
+        let list = refs
+            .iter()
+            .map(|(k, n)| format!("{k}:{n}"))
+            .collect::<Vec<_>>()
+            .join("、");
+        return Err(OntoError::conflict(format!(
+            "对象类型 {api_name} 仍被引用（{list}），请先清理引用或改用「废弃」"
+        )));
+    }
+    // 删除前自动存档（顺序钉死：引用检查通过后才存档，避免被拒删除留噪音快照）。
+    auto_snapshot_before("删除对象类型", &api_name).await;
     let tenant = current_tenant();
     let n = store()
         .delete_object_type(&tenant, &api_name)
         .await
         .map_err(|e| OntoError::internal_error(format!("删除对象类型失败: {e}")))?;
     Ok(Json(ApiResp::ok(json!({ "apiName": api_name, "deleted": n > 0 }))))
+}
+
+/// 高危删除前置自动存档：失败仅记日志不阻断删除（存档是兜底而非门槛；live 未变，不发事件）。
+async fn auto_snapshot_before(op: &str, name: &str) {
+    let tenant = current_tenant();
+    let summary = format!("{op} {name} 前");
+    if let Err(e) = store().archive_snapshot(&tenant, &summary, current_display_user()).await {
+        tracing::warn!(op = %op, name = %name, "删除前自动存档失败（删除继续）: {e}");
+    }
 }
 
 // ───────────────────────────── 关系类型 ─────────────────────────────
@@ -323,7 +349,24 @@ pub async fn save_shared_property(
     Ok(Json(ApiResp::ok(json!({ "apiName": def.api_name, "saved": true }))))
 }
 
+/// DELETE /shared-properties/{apiName} —— 删除共享属性。
+/// 安全网：①被引用（对象属性/接口契约）→ 409 出引用清单；②删除前自动存档（可撤销）。
 pub async fn delete_shared_property(Path(api_name): Path<String>) -> Result<Json<ApiResp<Value>>> {
+    let refs = store()
+        .shared_property_references(&api_name)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("引用检查失败: {e}")))?;
+    if !refs.is_empty() {
+        let list = refs
+            .iter()
+            .map(|(k, n)| format!("{k}:{n}"))
+            .collect::<Vec<_>>()
+            .join("、");
+        return Err(OntoError::conflict(format!(
+            "共享属性 {api_name} 仍被引用（{list}），请先清理引用"
+        )));
+    }
+    auto_snapshot_before("删除共享属性", &api_name).await;
     let tenant = current_tenant();
     let n = store()
         .delete_shared_property(&tenant, &api_name)
@@ -414,38 +457,67 @@ pub async fn delete_function(Path(api_name): Path<String>) -> Result<Json<ApiRes
     Ok(Json(ApiResp::ok(json!({ "apiName": api_name, "deleted": n > 0 }))))
 }
 
-// ─────────────────────── 清单 / 发布 / 版本 ───────────────────────
+// ─────────────────────── 清单 / 版本 ───────────────────────
 
-/// GET /manifest —— 本体全量清单（六类元素的列表）。
-pub async fn manifest() -> Result<Json<ApiResp<Value>>> {
-    let tenant = current_tenant();
-    let m = store()
-        .manifest(&tenant)
-        .await
-        .map_err(|e| OntoError::internal_error(format!("装载清单失败: {e}")))?;
-    Ok(Json(ApiResp::ok(json!(m))))
-}
-
-/// 发布请求体。
+/// GET /manifest 查询参数。
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
-pub struct PublishReq {
-    pub summary: String,
+pub struct ManifestQuery {
+    /// 可选：逗号分隔的类型键（objectTypes/linkTypes/interfaces/sharedProperties/
+    /// actionTypes/functions，大小写不敏感，亦接受 object/link/... 简写）。
+    /// 不传 = 全量六类；传了 = 仅装载指定类型（轻量消费方按需取数）。
+    pub types: Option<String>,
 }
 
-/// POST /publish —— 发布当前本体为不可变版本快照。
-pub async fn publish(Json(req): Json<PublishReq>) -> Result<Json<ApiResp<Value>>> {
+/// kind 简写 → 清单键名归一。
+fn normalize_manifest_type(raw: &str) -> Option<&'static str> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "objecttypes" | "object" | "objects" => Some("objectTypes"),
+        "linktypes" | "link" | "links" => Some("linkTypes"),
+        "interfaces" | "interface" => Some("interfaces"),
+        "sharedproperties" | "shared" | "sharedproperty" => Some("sharedProperties"),
+        "actiontypes" | "action" | "actions" => Some("actionTypes"),
+        "functions" | "function" | "fn" => Some("functions"),
+        _ => None,
+    }
+}
+
+/// GET /manifest —— 本体全量清单（六类元素的列表）；`?types=` 支持按类型子集装载。
+pub async fn manifest(Query(q): Query<ManifestQuery>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
-    let meta = store()
-        .publish(&tenant, &req.summary, current_display_user())
-        .await
-        .map_err(|e| OntoError::internal_error(format!("发布失败: {e}")))?;
-    // O7 实时：广播发布事件（订阅者经 /events SSE 感知）。
-    crate::events::emit(&tenant, "published", json!(meta));
-    Ok(Json(ApiResp::ok(json!(meta))))
+    match &q.types {
+        None => {
+            let m = store()
+                .manifest(&tenant)
+                .await
+                .map_err(|e| OntoError::internal_error(format!("装载清单失败: {e}")))?;
+            Ok(Json(ApiResp::ok(json!(m))))
+        }
+        Some(types) => {
+            let mut kinds = Vec::new();
+            for raw in types.split(',') {
+                let Some(k) = normalize_manifest_type(raw) else {
+                    return Err(OntoError::bad_request(format!(
+                        "未知清单类型 {raw:?}（可用：objectTypes/linkTypes/interfaces/sharedProperties/actionTypes/functions）"
+                    )));
+                };
+                if !kinds.contains(&k.to_string()) {
+                    kinds.push(k.to_string());
+                }
+            }
+            if kinds.is_empty() {
+                return Err(OntoError::bad_request("types 参数为空"));
+            }
+            let m = store()
+                .manifest_filtered(&tenant, &kinds)
+                .await
+                .map_err(|e| OntoError::internal_error(format!("装载清单失败: {e}")))?;
+            Ok(Json(ApiResp::ok(json!(m))))
+        }
+    }
 }
 
-/// GET /versions —— 发布版本列表（降序）。
+/// GET /versions —— 存档版本列表（降序）。
 pub async fn list_versions() -> Result<Json<ApiResp<Value>>> {
     let versions = store()
         .list_versions()

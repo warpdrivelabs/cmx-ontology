@@ -48,6 +48,12 @@ impl PgOntologyStore {
                 .await
                 .map_err(|e| StoreError::Backend(format!("写表注释失败: {e}")))?;
         }
+        // 一次性清理重放（已废弃表 DROP，幂等；见 ddl.rs DDL_CLEANUPS）。
+        for stmt in crate::ddl::DDL_CLEANUPS {
+            execute_sql(&self.db_id, None, stmt)
+                .await
+                .map_err(|e| StoreError::Backend(format!("清理废弃表失败: {e}")))?;
+        }
         Ok(())
     }
 
@@ -207,55 +213,9 @@ impl PgOntologyStore {
         }
     }
 
-    // ─────────────────── 发布 / 版本（inherent 方法） ───────────────────
+    // ─────────────────── 版本快照（存档栈读取；写入走 snapshot_store） ───────────────────
 
-    /// 发布当前本体：全量定义快照 → 不可变 om_version（version+1、rev 内容哈希）。返回版本元数据。
-    pub async fn publish(
-        &self,
-        tenant: &str,
-        summary: &str,
-        published_by: Option<String>,
-    ) -> StoreResult<OntologyVersionMeta> {
-        let snapshot = self.snapshot(tenant).await?;
-        let snap_str = snapshot.to_string();
-        let rev = format!("{:016x}", xxhash_rust::xxh64::xxh64(snap_str.as_bytes(), 0));
-        let vds = self
-            .query(
-                "SELECT COALESCE(MAX(version), 0) AS mx FROM om_version",
-                vec![],
-                "om_ver_max",
-            )
-            .await?;
-        let cur_max = vds
-            .iter()
-            .next()
-            .map(|r| get_i64(r, vds.schema.as_ref(), "mx"))
-            .unwrap_or(0);
-        let next = (cur_max + 1) as u32;
-        let now = Utc::now();
-        self.exec(
-            "INSERT INTO om_version (version, rev, summary, snapshot, published_by, published_at) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
-            vec![
-                DataValue::Int(next as i64),
-                DataValue::String(rev.clone()),
-                DataValue::String(summary.to_string()),
-                DataValue::Json(snap_str),
-                opt_str(&published_by),
-                DataValue::DateTime(now),
-            ],
-        )
-        .await?;
-        Ok(OntologyVersionMeta {
-            version: next,
-            rev,
-            summary: summary.to_string(),
-            published_by,
-            published_at: now,
-        })
-    }
-
-    /// 列出全部发布版本（版本降序）。
+    /// 列出全部存档版本（版本降序）。
     pub async fn list_versions(&self) -> StoreResult<Vec<OntologyVersionMeta>> {
         let ds = self
             .query(
@@ -279,7 +239,7 @@ impl PgOntologyStore {
         Ok(out)
     }
 
-    /// 取某版本发布快照（全量定义 jsonb）。
+    /// 取某版本存档快照（全量定义 jsonb）。
     pub async fn get_version(&self, version: u32) -> StoreResult<Option<Value>> {
         let ds = self
             .query(
@@ -294,53 +254,64 @@ impl PgOntologyStore {
         }
     }
 
-    /// 组装全量定义快照（发布用）：六类元素的完整定义。
-    async fn snapshot(&self, tenant: &str) -> StoreResult<Value> {
-        // 对象类型：按清单逐一取全量定义。
-        let mut object_types = Vec::new();
-        for m in self.list_object_types(tenant).await? {
-            if let Some(d) = self.get_object_type(tenant, &m.api_name).await? {
-                object_types.push(serde_json::to_value(d).unwrap_or(Value::Null));
+    /// 维护白名单（subject, subject_kind）——**空表 = 开放**（全员维护等效；
+    /// 有行 = 仅命中者可写，写权限守卫不可被直连 API 绕过）。
+    pub async fn list_maintainers(&self) -> StoreResult<Vec<(String, String)>> {
+        let ds = self
+            .query(
+                "SELECT subject, subject_kind FROM om_maintainer ORDER BY subject",
+                vec![],
+                "om_maintainer_list",
+            )
+            .await?;
+        let s = ds.schema.as_ref();
+        Ok(ds
+            .iter()
+            .map(|row| {
+                (
+                    get_string(row, s, "subject").unwrap_or_default(),
+                    get_opt_string(row, s, "subject_kind").unwrap_or_else(|| "user".into()),
+                )
+            })
+            .collect())
+    }
+
+    /// 清单过滤装载（inherent；`OntologyStore::manifest` 的按需子集版）：
+    /// `kinds` 为空 = 全量六类（调用方走 trait `manifest`）；非空 = 仅装载指定键
+    /// （objectTypes/linkTypes/interfaces/sharedProperties/actionTypes/functions），
+    /// 返回仅含请求键的对象——供轻量消费方按需取数。
+    pub async fn manifest_filtered(&self, tenant: &str, kinds: &[String]) -> StoreResult<Value> {
+        let mut out = serde_json::Map::new();
+        for k in kinds {
+            match k.as_str() {
+                "objectTypes" => {
+                    let v = self.list_object_types(tenant).await?;
+                    out.insert(k.clone(), serde_json::to_value(&v).unwrap_or(Value::Null));
+                }
+                "linkTypes" => {
+                    let v = self.list_link_types(tenant).await?;
+                    out.insert(k.clone(), serde_json::to_value(&v).unwrap_or(Value::Null));
+                }
+                "interfaces" => {
+                    let v = self.list_interfaces(tenant).await?;
+                    out.insert(k.clone(), serde_json::to_value(&v).unwrap_or(Value::Null));
+                }
+                "sharedProperties" => {
+                    let v = self.list_shared_properties(tenant).await?;
+                    out.insert(k.clone(), serde_json::to_value(&v).unwrap_or(Value::Null));
+                }
+                "actionTypes" => {
+                    let v = self.list_action_types(tenant).await?;
+                    out.insert(k.clone(), serde_json::to_value(&v).unwrap_or(Value::Null));
+                }
+                "functions" => {
+                    let v = self.list_functions(tenant).await?;
+                    out.insert(k.clone(), serde_json::to_value(&v).unwrap_or(Value::Null));
+                }
+                _ => return Err(StoreError::Backend(format!("未知清单类型 {k:?}"))),
             }
         }
-        let mut link_types = Vec::new();
-        for m in self.list_link_types(tenant).await? {
-            if let Some(d) = self.get_link_type(tenant, &m.api_name).await? {
-                link_types.push(serde_json::to_value(d).unwrap_or(Value::Null));
-            }
-        }
-        let mut interfaces = Vec::new();
-        for m in self.list_interfaces(tenant).await? {
-            if let Some(d) = self.get_interface(tenant, &m.api_name).await? {
-                interfaces.push(serde_json::to_value(d).unwrap_or(Value::Null));
-            }
-        }
-        let mut shared_properties = Vec::new();
-        for m in self.list_shared_properties(tenant).await? {
-            if let Some(d) = self.get_shared_property(tenant, &m.api_name).await? {
-                shared_properties.push(serde_json::to_value(d).unwrap_or(Value::Null));
-            }
-        }
-        let mut action_types = Vec::new();
-        for m in self.list_action_types(tenant).await? {
-            if let Some(d) = self.get_action_type(tenant, &m.api_name).await? {
-                action_types.push(serde_json::to_value(d).unwrap_or(Value::Null));
-            }
-        }
-        let mut functions = Vec::new();
-        for m in self.list_functions(tenant).await? {
-            if let Some(d) = self.get_function(tenant, &m.api_name).await? {
-                functions.push(serde_json::to_value(d).unwrap_or(Value::Null));
-            }
-        }
-        Ok(serde_json::json!({
-            "objectTypes": object_types,
-            "linkTypes": link_types,
-            "interfaces": interfaces,
-            "sharedProperties": shared_properties,
-            "actionTypes": action_types,
-            "functions": functions,
-        }))
+        Ok(Value::Object(out))
     }
 }
 
@@ -405,10 +376,11 @@ impl OntologyStore for PgOntologyStore {
     }
 
     async fn list_object_types(&self, _tenant: &str) -> StoreResult<Vec<ObjectTypeMeta>> {
+        // 清单富化：properties 全量随行（manifest 即全量形状，消费方免单独拉详情）。
         let ds = self
             .query(
                 "SELECT api_name, display_name, status, primary_key, \
-                 jsonb_array_length(properties) AS pc, dam, doc_type, version, updated_at \
+                 jsonb_array_length(properties) AS pc, properties, dam, doc_type, version, updated_at \
                  FROM om_object_type ORDER BY updated_at DESC",
                 vec![],
                 "om_object_type_list",
@@ -423,6 +395,10 @@ impl OntologyStore for PgOntologyStore {
                 status: parse_status(row, s),
                 primary_key: get_opt_string(row, s, "primary_key").unwrap_or_default(),
                 property_count: get_i64(row, s, "pc") as u32,
+                properties: get_json(row, s, "properties")
+                    .ok()
+                    .and_then(|v| serde_json::from_value(v).ok())
+                    .unwrap_or_default(),
                 dam: get_opt_json(row, s, "dam").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
                 doc_type: get_opt_json(row, s, "doc_type").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
                 version: get_i64(row, s, "version") as u32,

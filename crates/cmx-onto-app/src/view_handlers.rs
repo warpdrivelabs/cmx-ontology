@@ -1,12 +1,11 @@
-//! 场景视图 + 成员级装载 handler（本体工作室 P1；P2 起视图写轨切草稿——方案 §2.1/§2.4/§5.1/§七）。
+//! 场景视图 + 成员级装载 handler（直改 live 架构：视图写轨直写 live om_view）。
 //!
 //! - `GET /views`：行集 + **auto 虚拟条目读时派生**（manifest 按 DAM 域聚合现算，不落行；
-//!   未分组伪域不播种——防"一锅炖收编全部无 DAM 类型"）。保持 live 口径：消费方永不见草稿；
-//!   studio 前端自行合并草稿 views 段显示"草稿待发布"标记。
-//! - `POST /views` / `POST /views/remove`：P2 起写**草稿 views 段**（R1 视图写轨对齐：
-//!   live om_view 仅由发布应用写入；消费读取零改动）。
-//! - `POST /views/layout`：**豁免**仍 LWW 直写 live——布局是物化产物，不进版本语义（rev 指纹
-//!   排除 layout；发布应用 DO UPDATE 不含 layout 列，互不回吞）。
+//!   未分组伪域不播种——防"一锅炖收编全部无 DAM 类型"）。
+//! - `POST /views` / `POST /views/remove`：**直写 live**（`upsert_view_locked` B0 乐观锁 /
+//!   `delete_view`）；删除对 auto 行豁免（域派生物化产物，与回滚派生删除同口径）。
+//! - `POST /views/layout`：LWW 直写 live——布局是物化产物，不进版本语义（rev 指纹排除
+//!   layout；回滚应用 DO UPDATE 不含 layout 列，互不回吞）。
 //! - `GET /graph?view=X`：成员级装载一条请求到位（对象全量定义+相关边+实现接口+共享属性+
 //!   跨场景关系角标数据 → 组件 spec，消 N+1）。
 //! - `POST /shared-properties/batch`：A1 批量详情（ids≤500，`{items,errors}`）。
@@ -25,9 +24,13 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// 草稿链路 StoreError → HTTP 错误映射（复用 draft_handlers 同一口径：Conflict→409 等）。
-fn draft_err(ctx: &'static str) -> impl Fn(cmx_onto_model::StoreError) -> OntoError {
-    crate::draft_handlers::draft_store_err(ctx)
+/// StoreError → HTTP 错误映射（Conflict→409 / NotFound→404 / 其余→500）。
+fn store_err(ctx: &'static str) -> impl Fn(cmx_onto_model::StoreError) -> OntoError {
+    move |e| match e {
+        cmx_onto_model::StoreError::Conflict(m) => OntoError::conflict(m),
+        cmx_onto_model::StoreError::NotFound(m) => OntoError::not_found(m),
+        other => OntoError::internal_error(format!("{ctx}: {other}")),
+    }
 }
 
 // ───────────────────────────── 视图 CRUD ─────────────────────────────
@@ -126,101 +129,84 @@ impl Default for SaveViewReq {
     }
 }
 
-/// POST /views —— P2 起写**草稿 views 段**（R1 裁决：live om_view 仅由发布应用写入）。
-/// 请求 `version` 字段重解释 = **草稿行乐观锁基线**（= GET /draft 的 version；传 0 = 宽松
-/// 保存不校验并发）。同名单覆盖 meta/成员/来源；请求未带布局（null/空对象）时**保留已有
-/// 布局**——成员编辑不吞布局（与发布应用 DO UPDATE 不含 layout 同口径）。
+/// POST /views —— **直写 live om_view**（`upsert_view_locked` B0 乐观锁：`version`=0 宽松
+/// 新建/覆盖，非 0 严格行锁——他人保存过 → 409）。同名单覆盖 meta/成员/来源；请求未带布局
+/// （null/空对象）时**保留已有布局**——成员编辑不吞布局。
 pub async fn save_view(Json(req): Json<SaveViewReq>) -> Result<Json<ApiResp<Value>>> {
-    crate::draft_handlers::require_maintainer().await?;
-    // 请求未带布局（null/空对象）→ 保留草稿中已有布局：成员编辑不吞布局。
+    crate::archive_handlers::require_maintainer().await?;
+    // 请求未带布局（null/空对象）→ 保留 live 已有布局：成员编辑不吞布局。
     let keep_layout =
         req.layout.is_null() || req.layout.as_object().is_some_and(|m| m.is_empty());
     let mut def = SceneViewDef {
-        api_name: req.api_name,
+        api_name: req.api_name.clone(),
         display_name: req.display_name,
         description: req.description,
         dam: req.dam,
         members: req.members,
         source: req.source,
         layout: if keep_layout { json!({}) } else { req.layout },
-        // 草稿段内 version 不参与 rev 指纹；真版本由发布时 om_view.version+1 维护。
-        version: 0,
+        version: req.version,
     };
     def.validate()
         .map_err(|e| OntoError::business_error(format!("场景视图非法: {e}")))?;
     let tenant = current_tenant();
-    let (mut row, _) = crate::draft_handlers::ensure_draft_forked(&tenant).await?;
-    match row.content.views.iter_mut().find(|v| v.api_name == def.api_name) {
-        Some(existing) => {
-            if keep_layout {
-                def.layout = std::mem::take(&mut existing.layout);
-            }
-            *existing = def.clone();
+    if keep_layout {
+        if let Some(existing) = store()
+            .get_view(&tenant, &def.api_name)
+            .await
+            .map_err(|e| OntoError::internal_error(format!("装载场景视图失败: {e}")))?
+        {
+            def.layout = existing.layout;
         }
-        None => row.content.views.push(def.clone()),
     }
-    // version=0 → 宽松：以 fork/读回的行版本为基线；非 0 → 严格行锁（他人保存过 → 409）。
-    let expected = if req.version == 0 { row.version } else { req.version };
     let version = store()
-        .save_draft_row(&row.content, None, expected, current_display_user())
+        .upsert_view_locked(&tenant, &def)
         .await
-        .map_err(draft_err("保存场景草稿失败"))?;
+        .map_err(store_err("保存场景视图失败"))?;
     crate::events::emit(
         &tenant,
-        "draft-changed",
+        "view-changed",
         json!({ "by": current_display_user(), "reason": format!("view-save:{}", def.api_name) }),
     );
     Ok(Json(ApiResp::ok(
-        json!({ "apiName": def.api_name, "saved": true, "draftVersion": version }),
+        json!({ "apiName": def.api_name, "saved": true, "version": version }),
     )))
 }
 
-/// POST /views/remove 请求体。baseVersion = 草稿行乐观锁（可选；缺省宽松）。
+/// POST /views/remove 请求体。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoveViewReq {
     pub api_name: String,
-    pub base_version: Option<u32>,
 }
 
-/// POST /views/remove —— P2 起从**草稿 views 段**移除（发布应用按派生规则落地：
-/// live manual 行草稿无 → 发布时删除；live auto 行**豁免**——物化产物，成员随域自动跟随）。
-/// 草稿与 live 均无此名 → 无操作不推版本。二次确认由前端承担。
+/// POST /views/remove —— **直删 live om_view 行**；auto 行豁免（域派生物化产物，成员随域
+/// 自动跟随，删除无意义）。行不存在 → 幂等成功（removed=false）。二次确认由前端承担。
 pub async fn remove_view(Json(req): Json<RemoveViewReq>) -> Result<Json<ApiResp<Value>>> {
-    crate::draft_handlers::require_maintainer().await?;
+    crate::archive_handlers::require_maintainer().await?;
     let tenant = current_tenant();
-    let (mut row, _) = crate::draft_handlers::ensure_draft_forked(&tenant).await?;
     let live_row = store()
         .get_view(&tenant, &req.api_name)
         .await
         .map_err(|e| OntoError::internal_error(format!("装载场景视图失败: {e}")))?;
-    let removed_from_draft = row
-        .content
-        .views
-        .iter()
-        .any(|v| v.api_name == req.api_name);
-    row.content.views.retain(|v| v.api_name != req.api_name);
-    // 两边都没有 → 纯空操作（避免无谓推进草稿版本）。
-    if !removed_from_draft && live_row.is_none() {
+    let Some(row) = live_row else {
+        return Ok(Json(ApiResp::ok(json!({ "apiName": req.api_name, "removed": false }))));
+    };
+    if row.source == ViewSource::Auto {
         return Ok(Json(ApiResp::ok(json!(
-            { "apiName": req.api_name, "removedFromDraft": false, "willDeleteLive": false, "draftVersion": row.version }
+            { "apiName": req.api_name, "removed": false, "reason": "auto 豁免" }
         ))));
     }
-    let expected = req.base_version.unwrap_or(row.version);
-    let version = store()
-        .save_draft_row(&row.content, None, expected, current_display_user())
+    let n = store()
+        .delete_view(&tenant, &req.api_name)
         .await
-        .map_err(draft_err("移除场景草稿失败"))?;
-    // live 行为 manual 才会在发布时真正删除；auto 行豁免（域派生，删除后仍会重新出现）。
-    let will_delete_live = live_row.is_some_and(|v| v.source == ViewSource::Manual);
+        .map_err(store_err("删除场景视图失败"))?;
     crate::events::emit(
         &tenant,
-        "draft-changed",
+        "view-changed",
         json!({ "by": current_display_user(), "reason": format!("view-remove:{}", req.api_name) }),
     );
-    Ok(Json(ApiResp::ok(json!(
-        { "apiName": req.api_name, "removedFromDraft": removed_from_draft, "willDeleteLive": will_delete_live, "draftVersion": version }
-    ))))
+    Ok(Json(ApiResp::ok(json!({ "apiName": req.api_name, "removed": n > 0 }))))
 }
 
 /// POST /views/layout 请求体。
@@ -238,7 +224,7 @@ pub struct SaveViewLayoutReq {
 pub async fn save_view_layout(
     Json(req): Json<SaveViewLayoutReq>,
 ) -> Result<Json<ApiResp<Value>>> {
-    crate::draft_handlers::require_maintainer().await?;
+    crate::archive_handlers::require_maintainer().await?;
     if !req.api_name.starts_with("auto:") && req.api_name.is_empty() {
         return Err(OntoError::bad_request("apiName 不能为空"));
     }

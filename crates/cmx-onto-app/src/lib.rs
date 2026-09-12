@@ -13,7 +13,7 @@ pub mod engine;
 pub mod handlers;
 pub mod action_handlers;
 pub mod action_templates;
-pub mod draft_handlers;
+pub mod archive_handlers;
 pub mod function_handlers;
 pub mod function_runtime;
 pub mod policy_handlers;
@@ -132,20 +132,14 @@ where
             "/functions/{api_name}",
             get(handlers::get_function).delete(handlers::delete_function),
         )
-        // —— 清单 / 发布 / 版本 ——
+        // —— 清单 / 存档 / 版本（直改 live 架构：编辑直写 om_*，存档 = 检查点，回滚 = 恢复）——
         .route("/manifest", get(handlers::manifest))
-        .route("/publish", post(handlers::publish))
+        .route("/snapshots", post(archive_handlers::create_snapshot))
         .route("/versions", get(handlers::list_versions))
         .route("/versions/{version}", get(handlers::get_version))
-        // —— 草稿 / 发布双轨（本体工作室 P2，方案 §2.4/§七；POST 语义，无 PUT/可变路径段）——
-        .route("/draft", get(draft_handlers::get_draft))
-        .route("/draft/save", post(draft_handlers::save_draft))
-        .route("/draft/discard", post(draft_handlers::discard_draft))
-        .route("/releases/preview", post(draft_handlers::releases_preview))
-        .route("/releases/publish", post(draft_handlers::releases_publish))
-        .route("/versions/diff", get(draft_handlers::versions_diff))
-        .route("/versions/restore", post(draft_handlers::versions_restore))
-        .route("/me/roles", get(draft_handlers::me_roles))
+        .route("/versions/diff", get(archive_handlers::versions_diff))
+        .route("/versions/restore", post(archive_handlers::versions_restore))
+        .route("/me/roles", get(archive_handlers::me_roles))
         // —— O7 实时（P2 注册进鉴权路由；标准 Bearer 鉴权，前端 fetch 流式读取消费 SSE）——
         .route("/events", get(sse_events))
         // —— O2 对象层：对象写入 ——
