@@ -15,8 +15,8 @@ use cmx_onto_model::{
 use serde_json::Value;
 
 use crate::store::{
-    get_i64, get_opt_json, get_opt_string, get_opt_ts, get_string, json_or_default, parse_status,
-    PgOntologyStore,
+    get_i64, get_json, get_opt_json, get_opt_string, get_opt_ts, get_string, json_or_default,
+    parse_status, PgOntologyStore,
 };
 
 impl PgOntologyStore {
@@ -241,7 +241,7 @@ impl PgOntologyStore {
             .query(
                 &format!(
                     "SELECT api_name, display_name, status, primary_key, \
-                     jsonb_array_length(properties) AS pc, properties, dam, doc_type, version, updated_at \
+                     jsonb_array_length(properties) AS pc, properties, implements, dam, doc_type, version, updated_at \
                      FROM om_object_type{where_sql} \
                      ORDER BY updated_at DESC LIMIT ${} OFFSET ${}",
                     params.len() - 1,
@@ -484,6 +484,10 @@ fn object_meta_from_row(row: &Row, s: &Schema) -> StoreResult<ObjectTypeMeta> {
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_default(),
         doc_type: get_opt_json(row, s, "doc_type")
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default(),
+        implements: get_json(row, s, "implements")
+            .ok()
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_default(),
         version: get_i64(row, s, "version") as u32,

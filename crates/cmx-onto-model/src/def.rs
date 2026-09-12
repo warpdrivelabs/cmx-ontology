@@ -557,6 +557,9 @@ pub struct ObjectTypeMeta {
     /// 业务单据类型（清单富化：对象浏览器按此在模块下再分一层）。
     #[serde(default)]
     pub doc_type: DocTypeRef,
+    /// 实现的接口 apiName 清单（清单富化：画布底座总览据此派生「对象—接口」实现连线）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub implements: Vec<String>,
     pub version: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<DateTime<Utc>>,

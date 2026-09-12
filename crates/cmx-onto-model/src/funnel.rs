@@ -135,6 +135,7 @@ mod tests {
                 ("region_code".into(), "region".into()),
             ],
             required: vec!["name".into()],
+            source_db_id: None,
         }
     }
 

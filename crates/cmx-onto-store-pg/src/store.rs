@@ -376,11 +376,11 @@ impl OntologyStore for PgOntologyStore {
     }
 
     async fn list_object_types(&self, _tenant: &str) -> StoreResult<Vec<ObjectTypeMeta>> {
-        // 清单富化：properties 全量随行（manifest 即全量形状，消费方免单独拉详情）。
+        // 清单富化：properties / implements 全量随行（manifest 即全量形状，消费方免单独拉详情）。
         let ds = self
             .query(
                 "SELECT api_name, display_name, status, primary_key, \
-                 jsonb_array_length(properties) AS pc, properties, dam, doc_type, version, updated_at \
+                 jsonb_array_length(properties) AS pc, properties, implements, dam, doc_type, version, updated_at \
                  FROM om_object_type ORDER BY updated_at DESC",
                 vec![],
                 "om_object_type_list",
@@ -401,6 +401,10 @@ impl OntologyStore for PgOntologyStore {
                     .unwrap_or_default(),
                 dam: get_opt_json(row, s, "dam").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
                 doc_type: get_opt_json(row, s, "doc_type").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
+                implements: get_json(row, s, "implements")
+                    .ok()
+                    .and_then(|v| serde_json::from_value(v).ok())
+                    .unwrap_or_default(),
                 version: get_i64(row, s, "version") as u32,
                 updated_at: get_opt_ts(row, s, "updated_at"),
             });
