@@ -32,7 +32,12 @@ pub use object_store::{LinkEnds, LinkResolver, ObjectStore};
 pub use objectset::*;
 pub use store::OntologyStore;
 pub use view::{SceneViewDef, SceneViewMeta, ViewMembers, ViewSource};
-pub use action::{resolve_edits, resolve_side_effects, validate_params, run_validations, SideEffect, ValidationFailure, ObjectEdit};
+pub use action::{
+    apply_param_defaults, build_validation_ctx, derive_missing_params, derive_target_object_types,
+    edit_object_types, parse_function_result, resolve_edits, resolve_side_effects, run_validations,
+    save_validate_action, validate_edit_sequence, validate_params, ObjectEdit, SideEffect,
+    ValidationFailure,
+};
 pub use feel::{eval_expression, eval_predicate, FeelError};
 pub use function::{evaluate as evaluate_function, input_specs, check_inputs, InputSpec, FunctionError};
 pub use authz::{residual_set, redact_rows};

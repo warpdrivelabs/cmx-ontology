@@ -75,9 +75,10 @@ pub const DDL_STATEMENTS: &[&str] = &[
         side_effects      JSONB        NOT NULL DEFAULT '[]',
         function_backing  VARCHAR(128),
         status            VARCHAR(32)  NOT NULL DEFAULT 'experimental',
+        target_object_types JSONB      NOT NULL DEFAULT '[]',
         created_at        TIMESTAMPTZ  NOT NULL,
         updated_at        TIMESTAMPTZ  NOT NULL
-    )"#,
+   )"#,
     // —— 函数 ——
     r#"CREATE TABLE IF NOT EXISTS om_function (
         api_name        VARCHAR(128) PRIMARY KEY,
@@ -153,6 +154,10 @@ pub const DDL_STATEMENTS: &[&str] = &[
     "ALTER TABLE om_object_type ADD COLUMN IF NOT EXISTS dam JSONB NOT NULL DEFAULT '{}'",
     // 对象类型 业务单据类型（对象浏览器在模块下再分一层）；幂等补列。
     "ALTER TABLE om_object_type ADD COLUMN IF NOT EXISTS doc_type JSONB NOT NULL DEFAULT '{}'",
+    // —— P2-0 动作作用对象类型（保存期派生物化列，语义真源仍是 parameters/logic；幂等补列）——
+    // boot 由 backfill_action_targets 回填存量；GIN 索引支撑「按对象类型查动作」的清单过滤。
+    "ALTER TABLE om_action_type ADD COLUMN IF NOT EXISTS target_object_types JSONB NOT NULL DEFAULT '[]'",
+    "CREATE INDEX IF NOT EXISTS idx_om_action_type_targets ON om_action_type USING GIN (target_object_types)",
     // —— O3 数据集成：源→对象映射（持久化，可复跑同步）——
     r#"CREATE TABLE IF NOT EXISTS om_source_mapping (
         object_type     VARCHAR(128) PRIMARY KEY,
@@ -268,6 +273,7 @@ pub const DDL_COMMENTS: &[&str] = &[
     "COMMENT ON COLUMN om_action_type.validations IS '提交校验 jsonb 数组（O4 落规则引擎 FEEL）'",
     "COMMENT ON COLUMN om_action_type.side_effects IS '副作用 jsonb 数组（通知/webhook/函数/流程/事件）'",
     "COMMENT ON COLUMN om_action_type.function_backing IS '函数背书：复杂逻辑走函数（om_function.api_name；可空）'",
+    "COMMENT ON COLUMN om_action_type.target_object_types IS '作用对象类型（P2-0 保存期从 parameters+logic 派生的物化列；语义真源仍是 parameters，GIN 索引支撑按类型查动作）'",
     "COMMENT ON COLUMN om_action_type.status IS '生命周期：experimental / active / deprecated'",
     "COMMENT ON COLUMN om_action_type.created_at IS '创建时间'",
     "COMMENT ON COLUMN om_action_type.updated_at IS '最近更新时间'",

@@ -31,6 +31,12 @@ CONFIG_FILE=onto-server-dev.toml cargo run -p cmx-onto-server
 # 浏览器打开 http://127.0.0.1:8097/ 进入本体建模控制台
 ```
 
+### 配置项（动作引擎）
+
+| 键 | env 覆盖 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `onto.action_batch_max_items` | `ONTO_ACTION_BATCH_MAX` | `100` | `POST /action-types/execute-batch` 单批项数上限（同事务逐项、任一失败全回滚；超限请分批，锁持有时间随批量线性增长） |
+
 ## API（v1 契约，前缀 `/api/onto/v1`；旧前缀 `/api/onto` 内嵌壳兼容）
 
 ```

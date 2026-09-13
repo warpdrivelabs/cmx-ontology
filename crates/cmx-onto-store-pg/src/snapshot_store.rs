@@ -18,15 +18,15 @@ use cmx_core::model::cell::DataValue;
 use cmx_core::model::data::dataset::DataSet;
 use cmx_database_pg::{execute_sql_with_params, get_default_pg_db_manager, query_sql_with_params, SqlParams};
 use cmx_onto_model::{
-    derive_deletions, element_total, snapshot_fingerprint, ActionTypeDef, DeletionRef,
-    FunctionDef, InterfaceDef, LinkTypeDef, ObjectTypeDef, SceneViewDef, SharedPropertyTypeDef,
-    StoreError, StoreResult, ELEMENT_KINDS, KIND_ACTION, KIND_FUNCTION, KIND_INTERFACE,
-    KIND_LINK, KIND_OBJECT, KIND_SHARED,
+    derive_deletions, derive_target_object_types, element_total, snapshot_fingerprint,
+    ActionTypeDef, DeletionRef, FunctionDef, InterfaceDef, LinkTypeDef, ObjectTypeDef,
+    SceneViewDef, SharedPropertyTypeDef, StoreError, StoreResult, ELEMENT_KINDS, KIND_ACTION,
+    KIND_FUNCTION, KIND_INTERFACE, KIND_LINK, KIND_OBJECT, KIND_SHARED,
 };
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::store::{get_i64, get_opt_string, get_string, PgOntologyStore};
+use crate::store::{get_i64, get_json, get_opt_string, get_string, PgOntologyStore};
 
 /// 存档结果（含去重标记，供前端 toast）。
 #[derive(Debug, Clone, Serialize)]
@@ -236,6 +236,9 @@ impl PgOntologyStore {
         let summary = format!("回滚到 v{restored_from}");
         let (archive_version, _rev, archive_deduped) =
             self.insert_version_tx(txn, &snapshot, &summary, &archived_by).await?;
+
+        // P2-0：恢复后回填动作作用对象物化列（事务内，看到本事务刚 upsert 的行；派生真源在内核）。
+        self.backfill_action_targets(Some(txn)).await?;
 
         Ok(RestoreOutcome {
             restored_from,
@@ -588,6 +591,47 @@ impl PgOntologyStore {
             .map_err(|e| StoreError::Backend(format!("执行失败: {e}")))
     }
 
+    /// P2-0：回填 `om_action_type.target_object_types`（作用对象类型物化列）。
+    ///
+    /// 派生唯一真源在 Rust 内核 [`derive_target_object_types`]（parameters + logic），
+    /// 本方法只做存量对齐：逐行重算，不同才 UPDATE（**不动 updated_at**）。
+    /// `txn = Some` 时在事务内执行（快照恢复路径，须看到本事务刚 upsert 的行）；
+    /// `None` 时独立执行（boot 回填）。返回更新的行数。
+    pub async fn backfill_action_targets(&self, txn: Option<&str>) -> StoreResult<u64> {
+        let ds = query_sql_with_params(
+            &self.db_id,
+            txn,
+            "SELECT api_name, parameters, logic, target_object_types FROM om_action_type",
+            SqlParams::DataValues(vec![]),
+            "om_action_type_bf_scan",
+        )
+        .await
+        .map_err(|e| StoreError::Backend(format!("扫描动作目标列失败: {e}")))?;
+        let s = ds.schema.as_ref();
+        let mut updated = 0u64;
+        for row in ds.iter() {
+            let api_name = get_string(row, s, "api_name")?;
+            let parameters = get_json(row, s, "parameters")?;
+            let logic = get_json(row, s, "logic")?;
+            let current = get_json(row, s, "target_object_types")?;
+            let want = serde_json::to_value(derive_target_object_types(&parameters, &logic))
+                .unwrap_or_else(|_| Value::Array(vec![]));
+            if current == want {
+                continue;
+            }
+            let params = vec![
+                DataValue::Json(want.to_string()),
+                DataValue::String(api_name),
+            ];
+            match txn {
+                Some(tx) => self.exec_tx(tx, BACKFILL_TARGET_SQL, params, "om_action_type_bf").await?,
+                None => self.exec(BACKFILL_TARGET_SQL, params).await?,
+            };
+            updated += 1;
+        }
+        Ok(updated)
+    }
+
     async fn query_tx(
         &self,
         txn: &str,
@@ -693,6 +737,10 @@ ON CONFLICT (api_name) DO UPDATE SET display_name=EXCLUDED.display_name, descrip
      parameters=EXCLUDED.parameters, logic=EXCLUDED.logic, validations=EXCLUDED.validations,
      side_effects=EXCLUDED.side_effects, function_backing=EXCLUDED.function_backing, status=EXCLUDED.status,
      updated_at=EXCLUDED.updated_at"#;
+
+/// P2-0：target_object_types 回填 UPDATE（列不动 updated_at，避免回填虚增版本时间线）。
+const BACKFILL_TARGET_SQL: &str =
+    "UPDATE om_action_type SET target_object_types = $1 WHERE api_name = $2";
 
 const UPSERT_FUNCTIONS: &str = r#"INSERT INTO om_function
     (api_name, display_name, runtime, kind, inputs, output, body, description, status, created_at, updated_at)

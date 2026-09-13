@@ -39,10 +39,16 @@ pub trait OntologyStore: Send + Sync {
     async fn delete_shared_property(&self, tenant: &str, api_name: &str) -> StoreResult<u64>;
 
     // ── 动作类型 ──
-    async fn upsert_action_type(&self, tenant: &str, def: &ActionTypeDef) -> StoreResult<()>;
+    /// `target_object_types`：保存期派生的作用对象类型（P2-0 物化列；由壳层计算传入）。
+    async fn upsert_action_type(
+        &self,
+        tenant: &str,
+        def: &ActionTypeDef,
+        target_object_types: &[String],
+    ) -> StoreResult<()>;
     async fn get_action_type(&self, tenant: &str, api_name: &str)
         -> StoreResult<Option<ActionTypeDef>>;
-    async fn list_action_types(&self, tenant: &str) -> StoreResult<Vec<SimpleTypeMeta>>;
+    async fn list_action_types(&self, tenant: &str) -> StoreResult<Vec<ActionTypeMeta>>;
     async fn delete_action_type(&self, tenant: &str, api_name: &str) -> StoreResult<u64>;
 
     // ── 函数 ──

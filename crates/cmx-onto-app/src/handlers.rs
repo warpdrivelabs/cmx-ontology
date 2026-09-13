@@ -396,15 +396,55 @@ pub async fn get_action_type(Path(api_name): Path<String>) -> Result<Json<ApiRes
     Ok(Json(ApiResp::ok(json!(def))))
 }
 
-pub async fn save_action_type(Json(def): Json<ActionTypeDef>) -> Result<Json<ApiResp<Value>>> {
+pub async fn save_action_type(Json(mut def): Json<ActionTypeDef>) -> Result<Json<ApiResp<Value>>> {
     def.validate()
         .map_err(|e| OntoError::business_error(format!("动作类型非法: {e}")))?;
+    // 保存期校验（P0）：函数背书与 logic/side_effects 互斥；defaultValue 满足 multipleChoice。
+    cmx_onto_model::save_validate_action(&def)
+        .map_err(OntoError::business_error)?;
+    // 保存期组合序列校验（P0-4 四规则）：logic 可静态解析时校验（$参数留原样、对象状态为空）；
+    // 解析失败（如 src:param 引用值缺失）则跳过——运行期/试算期仍会拦截（fail-closed 双保险）。
+    if def.function_backing.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true)
+        && let Ok(edits) = cmx_onto_model::resolve_edits(&def, &json!({}), &json!({}), None, None)
+    {
+        cmx_onto_model::validate_edit_sequence(&edits)
+            .map_err(OntoError::business_error)?;
+    }
+    // 自动派生缺失参数（P1-2，只增不删）：① logic $name ② src 显式引用 ③ side_effects 引用
+    // ④ 函数背书时从 FunctionDef.inputs 派生（object/objectSet 型入参同样成参数）。
+    let mut derived = cmx_onto_model::derive_missing_params(&mut def);
     let tenant = current_tenant();
+    if def.function_backing.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false) {
+        let fname = def.function_backing.as_deref().unwrap_or("").trim();
+        let func = store()
+            .get_function(&tenant, fname)
+            .await
+            .map_err(|e| OntoError::business_error(format!("装载函数 {fname} 失败: {e}")))?
+            .ok_or_else(|| OntoError::business_error(format!("函数 {fname} 未定义")))?;
+        let mut ps = def.parameters.as_array().cloned().unwrap_or_default();
+        for spec in cmx_onto_model::input_specs(&func) {
+            let exists = ps.iter().any(|p| p.get("name").and_then(|v| v.as_str()) == Some(spec.name.as_str()));
+            if !exists {
+                ps.push(json!({ "name": spec.name, "required": true, "type": spec.ty }));
+                if !derived.iter().any(|d| d == &spec.name) {
+                    derived.push(spec.name.clone());
+                }
+            }
+        }
+        def.parameters = json!(ps);
+    }
+    // P2-0：派生作用对象类型并物化落列（语义真源仍是 parameters/logic；清单查询用）。
+    let targets = cmx_onto_model::derive_target_object_types(&def.parameters, &def.logic);
     store()
-        .upsert_action_type(&tenant, &def)
+        .upsert_action_type(&tenant, &def, &targets)
         .await
         .map_err(|e| OntoError::internal_error(format!("保存动作类型失败: {e}")))?;
-    Ok(Json(ApiResp::ok(json!({ "apiName": def.api_name, "saved": true }))))
+    Ok(Json(ApiResp::ok(json!({
+        "apiName": def.api_name,
+        "saved": true,
+        "derivedParams": derived,
+        "targetObjectTypes": targets,
+    }))))
 }
 
 pub async fn delete_action_type(Path(api_name): Path<String>) -> Result<Json<ApiResp<Value>>> {

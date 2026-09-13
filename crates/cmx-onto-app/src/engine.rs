@@ -16,10 +16,17 @@ pub fn store() -> PgOntologyStore {
 /// 启动钩子：建默认库表（single 的 ONTO_DB_ID；multi 的租户库由 tenancy::ensure_current_ready 懒建）。
 /// **不起后台线程**（本体无 poller，纯请求驱动）。
 pub async fn warm_store() -> Result<(), String> {
-    PgOntologyStore::new(ONTO_DB_ID)
+    let store = PgOntologyStore::new(ONTO_DB_ID);
+    store
         .ensure_schema()
         .await
         .map_err(|e| format!("建表失败: {e}"))?;
+    // P2-0：存量动作的作用对象物化列回填（幂等；只对齐不一致行，不动 updated_at）。
+    match store.backfill_action_targets(None).await {
+        Ok(n) if n > 0 => tracing::info!(db = ONTO_DB_ID, n, "✅ 动作作用对象列已回填"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(db = ONTO_DB_ID, e = %e, "动作作用对象列回填失败（不影响启动；保存时将重算）"),
+    }
     tracing::info!(db = ONTO_DB_ID, "✅ 本体存储 schema 就绪（om_* 七表）");
     Ok(())
 }
