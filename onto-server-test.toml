@@ -33,6 +33,9 @@ flow_callback_object_type = "Supplier"
 # webhook 出站附加头（方向二：本体动作 → MDM CR webhook-create；服务间鉴权 + 业务库路由）
 webhook_headers = '{"X-API-Key":"cmx_sk_dev_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6","db_id":"fico-db"}'
 
+# Outbox 定时投递间隔秒数（动作副作用出站自动挡；缺省 10；0=关闭仅手动 POST /action-outbox/dispatch）
+outbox_dispatch_secs = 10
+
 [auth]
 mode = "jwt"                # 生产务必 jwt（off 模式租户取 X-Tenant 头，越权隐患；且委托令牌无法验签，用户身份断链）
 tenancy = "single"

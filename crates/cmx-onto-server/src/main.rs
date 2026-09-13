@@ -1,9 +1,9 @@
 /*
  * cmx-onto 独立本体平台微服务 HTTP 服务器。
  *
- * 采用通用骨架 cmx-web-chassis：main 只填 ServiceSpec——onto 路由 + 两个启动钩子（注册数据源、
- * 建表预热）+ onto 专属 banner/配色，交 chassis::run 装配。零 cmx-api 依赖。**无 poller**（本体
- * 建模无长驻实例/定时器）——钩子②只建表预热，纯请求驱动。
+ * 采用通用骨架 cmx-web-chassis：main 只填 ServiceSpec——onto 路由 + 三个启动钩子（注册数据源、
+ * 建表预热、拉起 Outbox 定时投递）+ onto 专属 banner/配色，交 chassis::run 装配。零 cmx-api 依赖。
+ * 唯一长驻任务 = Outbox 定时投递（动作副作用出站自动挡）；本体建模本身纯请求驱动。
  *
  * 配置（onto-server.toml，路径由 CONFIG_FILE 指定；[server] 框架键 env 覆盖 SERVER__*）：
  *   [server] host/port/log_dir/log_level/graceful_timeout_secs（默认 0.0.0.0:8097）
@@ -116,7 +116,7 @@ async fn main() -> cmx_web_chassis::Result<()> {
                 Ok(())
             })
         })
-        // 钩子② 建表预热（**无 poller**）。DB 不可达已在钩子① 探活 fail-fast；此处失败同样终止启动。
+        // 钩子② 建表预热。DB 不可达已在钩子① 探活 fail-fast；此处失败同样终止启动。
         .init("store", |_meta| {
             Box::pin(async {
                 warm_store()
@@ -126,6 +126,15 @@ async fn main() -> cmx_web_chassis::Result<()> {
                 warm_object_store()
                     .await
                     .map_err(|e| anyhow::anyhow!("对象存储初始化失败: {e}"))?;
+                Ok(())
+            })
+        })
+        // 钩子③ Outbox 定时投递：动作副作用出站自动挡（与手动 POST /action-outbox/dispatch
+        // 共用一条投递路径）。间隔 onto.outbox_dispatch_secs（缺省 10s，0=关）；
+        // ONTO_OUTBOUND=off 整轮跳过；SKIP LOCKED 认领，多实例部署安全。
+        .init("outbox-dispatcher", |_meta| {
+            Box::pin(async {
+                cmx_onto_app::action_handlers::spawn_outbox_dispatcher();
                 Ok(())
             })
         });

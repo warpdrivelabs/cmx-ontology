@@ -104,6 +104,15 @@ pub fn report_api_key() -> Option<String> {
     if v.is_empty() { None } else { Some(v) }
 }
 
+/// Outbox 定时投递间隔秒数（`ONTO_OUTBOX_DISPATCH_SECS` / `onto.outbox_dispatch_secs`）。
+/// 缺省 10s；0 = 关闭自动挡，仅手动 POST /action-outbox/dispatch。
+pub fn outbox_dispatch_secs() -> u64 {
+    cfg("ONTO_OUTBOX_DISPATCH_SECS", "onto.outbox_dispatch_secs", "10")
+        .trim()
+        .parse::<u64>()
+        .unwrap_or(10)
+}
+
 /// host 是否在白名单（`*` 放行一切；否则 host 精确匹配，忽略大小写）。
 fn host_allowed(url: &str, allow: &[String]) -> bool {
     if allow.iter().any(|a| a == "*") {

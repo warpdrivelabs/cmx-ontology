@@ -799,12 +799,25 @@ pub struct DispatchQuery {
 /// 按 kind 分派：`emitEvent`→SSE 事件流（O7）；`callFunction`→O5 函数求值；`notification`→SSE 通知；
 /// `webhook`→真发 HTTP（受 host 白名单约束）；`startBusinessProcess`→调 cmx-flowengine v1 起实例。
 pub async fn dispatch_outbox(Query(q): Query<DispatchQuery>) -> Result<Json<ApiResp<Value>>> {
-    let tenant = current_tenant();
     let limit = q.limit.unwrap_or(50).clamp(1, 500);
+    let (dispatched, deferred, failed) = dispatch_pending_batch(limit)
+        .await
+        .map_err(OntoError::internal_error)?;
+    Ok(Json(ApiResp::ok(json!({
+        "dispatched": dispatched, "deferred": deferred, "failed": failed,
+        "total": dispatched + deferred + failed
+    }))))
+}
+
+/// 领取并投递一批 pending 副作用，返回 (dispatched, deferred, failed)。
+/// 手动端点与定时器（[`spawn_outbox_dispatcher`]）共用这一条投递路径；领取走
+/// `FOR UPDATE SKIP LOCKED`（fetch_pending 原子置 processing），多实例并行调度安全。
+async fn dispatch_pending_batch(limit: i64) -> std::result::Result<(u32, u32, u32), String> {
+    let tenant = current_tenant();
     let jobs = action_executor()
         .fetch_pending(limit)
         .await
-        .map_err(|e| OntoError::internal_error(format!("领取 Outbox 失败: {e}")))?;
+        .map_err(|e| format!("领取 Outbox 失败: {e}"))?;
     let exec = action_executor();
     let mut dispatched = 0u32;
     let mut deferred = 0u32;
@@ -817,10 +830,37 @@ pub async fn dispatch_outbox(Query(q): Query<DispatchQuery>) -> Result<Json<ApiR
             Err(e) => { let _ = exec.mark_status(id, "failed", Some(&e)).await; failed += 1; }
         }
     }
-    Ok(Json(ApiResp::ok(json!({
-        "dispatched": dispatched, "deferred": deferred, "failed": failed,
-        "total": dispatched + deferred + failed
-    }))))
+    Ok((dispatched, deferred, failed))
+}
+
+/// Outbox 定时投递（自动挡；server main 启动钩子拉起，与手动端点共用
+/// [`dispatch_pending_batch`] 一条路径）。间隔 `onto.outbox_dispatch_secs` /
+/// `ONTO_OUTBOX_DISPATCH_SECS`（缺省 10s；0 = 关闭仅手动）。每轮先看全局出站开关：
+/// `ONTO_OUTBOUND=off` 时整轮跳过——熄火是部署选择，不自动把 pending 扫成 deferred。
+pub fn spawn_outbox_dispatcher() {
+    let secs = crate::outbound::outbox_dispatch_secs();
+    if secs == 0 {
+        tracing::info!("Outbox 定时投递已关闭（onto.outbox_dispatch_secs=0）——仅手动 POST /action-outbox/dispatch");
+        return;
+    }
+    tokio::spawn(async move {
+        tracing::info!(interval_secs = secs, "✅ Outbox 定时投递已启动（副作用出站自动挡）");
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(secs));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            if !crate::outbound::outbound_enabled() {
+                continue;
+            }
+            match dispatch_pending_batch(50).await {
+                Ok((d, f, x)) if d + f + x > 0 => {
+                    tracing::info!(dispatched = d, deferred = f, failed = x, "Outbox 定时投递一轮完成");
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "Outbox 定时投递领取失败（下一轮重试）"),
+            }
+        }
+    });
 }
 
 /// 投递单条副作用。Ok(true)=已投递；Ok(false)=挂起（外部未配置）；Err=失败。
