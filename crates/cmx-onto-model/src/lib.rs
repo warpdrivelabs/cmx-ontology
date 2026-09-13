@@ -187,7 +187,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             lt.backing_parsed(),
-            LinkBacking::ForeignKey { property: "customerId".into(), side: LinkEnd::B }
+            LinkBacking::ForeignKey { property: "customerId".into(), side: LinkEnd::B, target_property: None }
         );
         assert!(lt.validate().is_ok());
     }
@@ -202,7 +202,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             lt.backing_parsed(),
-            LinkBacking::ForeignKey { property: "ref".into(), side: LinkEnd::A }
+            LinkBacking::ForeignKey { property: "ref".into(), side: LinkEnd::A, target_property: None }
         );
     }
 
@@ -214,7 +214,7 @@ mod tests {
         }))
         .unwrap();
         let e = lt.validate().unwrap_err().to_string();
-        assert!(e.contains("property"), "应报 FK property 不能为空: {e}");
+        assert!(e.contains("sourceProperty"), "应报 FK sourceProperty 不能为空: {e}");
     }
 
     #[test]
@@ -222,6 +222,62 @@ mod tests {
         let lt: LinkTypeDef = serde_json::from_value(json!({
             "apiName": "l", "objectTypeA": "A", "objectTypeB": "B",
             "backing": { "kind": "foreignKey", "property": "2bad; DROP" }
+        }))
+        .unwrap();
+        assert!(lt.validate().is_err());
+    }
+
+    #[test]
+    fn backing_fk_page_shape_parsed() {
+        // 页面口径（designer「属性映射」两端各选一字段）：{"fk":{...}} —— 唯一对外口径。
+        let lt: LinkTypeDef = serde_json::from_value(json!({
+            "apiName": "buyerOf", "objectTypeA": "Employee", "objectTypeB": "Supplier",
+            "backing": { "fk": { "sourceProperty": "buyerId", "targetProperty": "empNo", "side": "b" } }
+        }))
+        .unwrap();
+        assert_eq!(
+            lt.backing_parsed(),
+            LinkBacking::ForeignKey {
+                property: "buyerId".into(),
+                side: LinkEnd::B,
+                target_property: Some("empNo".into()),
+            }
+        );
+        assert!(lt.validate().is_ok());
+    }
+
+    #[test]
+    fn backing_fk_page_shape_minimal() {
+        // 页面口径最小形：side/targetProperty 缺省（A 端持键 + 对端主键，Palantir Key 语义）。
+        let lt: LinkTypeDef = serde_json::from_value(json!({
+            "apiName": "settleCurrency", "objectTypeA": "Supplier", "objectTypeB": "Currency",
+            "backing": { "fk": { "sourceProperty": "settleCurrencyId" } }
+        }))
+        .unwrap();
+        assert_eq!(
+            lt.backing_parsed(),
+            LinkBacking::ForeignKey { property: "settleCurrencyId".into(), side: LinkEnd::A, target_property: None }
+        );
+        assert!(lt.validate().is_ok());
+    }
+
+    #[test]
+    fn backing_fk_page_shape_empty_source_rejected() {
+        // 页面口径缺 sourceProperty（designer 允许留空保存，此处校验拒绝）。
+        let lt: LinkTypeDef = serde_json::from_value(json!({
+            "apiName": "l", "objectTypeA": "A", "objectTypeB": "B",
+            "backing": { "fk": { "targetProperty": "id" } }
+        }))
+        .unwrap();
+        let e = lt.validate().unwrap_err().to_string();
+        assert!(e.contains("sourceProperty"), "应报 fk.sourceProperty 不能为空: {e}");
+    }
+
+    #[test]
+    fn backing_fk_page_shape_bad_target_rejected() {
+        let lt: LinkTypeDef = serde_json::from_value(json!({
+            "apiName": "l", "objectTypeA": "A", "objectTypeB": "B",
+            "backing": { "fk": { "sourceProperty": "fk", "targetProperty": "2bad" } }
         }))
         .unwrap();
         assert!(lt.validate().is_err());

@@ -128,9 +128,9 @@ impl<'a> Compiler<'a> {
                     LinkDirection::Reverse => (ends.0.clone(), LinkEnd::B),
                 };
                 let sql = match self.backing_of(link) {
-                    // 外键 backing：走对象表 FK 列 JOIN（不碰 ol_edge）。
-                    LinkBacking::ForeignKey { property, side } => {
-                        self.fk_search_around(&inner, ends, src_end, &property, side)?
+                    // 外键 backing：走对象表 FK 属性 JOIN（不碰 ol_edge）。
+                    LinkBacking::ForeignKey { property, side, target_property } => {
+                        self.fk_search_around(&inner, ends, src_end, &property, side, target_property.as_deref())?
                     }
                     // Edge / 暂未接的 JoinTable·Intermediary → 回退 ol_edge（保今日语义）。
                     _ => {
@@ -153,12 +153,13 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// ForeignKey backing 的 SearchAround → 对象表 FK 列 JOIN（不碰 ol_edge）。
+    /// ForeignKey backing 的 SearchAround → 对象表 FK 属性 JOIN（不碰 ol_edge）。
     ///
-    /// `ends`=(A类型,B类型)；`src_end`=源所在端；`property`=外键属性名；`side`=外键列所在端。
-    /// 两种物理形态：
-    /// - **FK 列在源端表**（`side == src_end`）：源表的 `props->>'property'` 即对端 pk → 直接取列值。
-    /// - **FK 列在终端表**（`side != src_end`）：终端表 `props->>'property'` 指回源 pk → 取终端 pk where FK ∈ 源。
+    /// `ends`=(A类型,B类型)；`src_end`=源所在端；`property`=外键属性名（页面口径 sourceProperty，
+    /// 落在 `side` 端表）；`target_property`=对端匹配属性（页面口径 targetProperty；None = 对端 pk 列，
+    /// Palantir Key 语义）。两种物理形态：
+    /// - **FK 属性在源端表**（`side == src_end`）：源表 `props->>'property'` 与对端匹配值/对端 pk 相等。
+    /// - **FK 属性在终端表**（`side != src_end`）：终端表 `props->>'property'` 指回源端匹配值/源端 pk。
     fn fk_search_around(
         &self,
         inner: &str,
@@ -166,6 +167,7 @@ impl<'a> Compiler<'a> {
         src_end: LinkEnd,
         property: &str,
         side: LinkEnd,
+        target_property: Option<&str>,
     ) -> StoreResult<String> {
         let prop = safe_ident(property)?;
         let (a_ty, b_ty) = ends;
@@ -176,17 +178,39 @@ impl<'a> Compiler<'a> {
         let src_tbl = object_table(src_ty)?;
         let terminal_tbl = object_table(terminal_ty)?;
         if side == src_end {
-            // FK 列在源端表：源表 property 列存对端 pk。取出去重、非空。
-            Ok(format!(
-                "SELECT DISTINCT s.props ->> '{prop}' AS pk FROM {src_tbl} s \
-                 WHERE s.pk IN ({inner}) AND s.props ->> '{prop}' IS NOT NULL"
-            ))
+            match target_property {
+                // 属性对属性：对端表 JOIN 源端表，对端.targetProperty = 源端.fk。
+                Some(tp) => {
+                    let tp = safe_ident(tp)?;
+                    Ok(format!(
+                        "SELECT DISTINCT t.pk AS pk FROM {terminal_tbl} t \
+                         JOIN {src_tbl} s ON t.props ->> '{tp}' = s.props ->> '{prop}' \
+                         WHERE s.pk IN ({inner})"
+                    ))
+                }
+                // 缺省：fk 值即对端 pk，直接取列值（去重、非空）。
+                None => Ok(format!(
+                    "SELECT DISTINCT s.props ->> '{prop}' AS pk FROM {src_tbl} s \
+                     WHERE s.pk IN ({inner}) AND s.props ->> '{prop}' IS NOT NULL"
+                )),
+            }
         } else {
-            // FK 列在终端表：终端表 property 列指回源 pk。取终端 pk where FK ∈ 源集。
-            Ok(format!(
-                "SELECT DISTINCT t.pk AS pk FROM {terminal_tbl} t \
-                 WHERE t.props ->> '{prop}' IN ({inner})"
-            ))
+            match target_property {
+                // 属性对属性：终端表（持键端）JOIN 源端表，终端.fk = 源端.targetProperty。
+                Some(tp) => {
+                    let tp = safe_ident(tp)?;
+                    Ok(format!(
+                        "SELECT DISTINCT t.pk AS pk FROM {terminal_tbl} t \
+                         JOIN {src_tbl} s ON t.props ->> '{prop}' = s.props ->> '{tp}' \
+                         WHERE s.pk IN ({inner})"
+                    ))
+                }
+                // 缺省：终端表 fk 指回源 pk → 取终端 pk where FK ∈ 源集。
+                None => Ok(format!(
+                    "SELECT DISTINCT t.pk AS pk FROM {terminal_tbl} t \
+                     WHERE t.props ->> '{prop}' IN ({inner})"
+                )),
+            }
         }
     }
 

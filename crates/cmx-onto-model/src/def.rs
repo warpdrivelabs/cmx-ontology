@@ -279,21 +279,32 @@ pub enum LinkEnd {
     B,
 }
 
-/// 关系落存储方式（强类型；对标 Palantir link datasource backing）。
+/// 关系落存储方式（强类型；对标 Palantir Foundry link datasource backing 的 FK 模式）。
 ///
-/// 序列化按 `kind` 标签分派（camelCase）：
-/// - `{"kind":"edge"}` —— 原生 `ol_edge` 单表（默认；写入 put_link/delete_link 走此）。
-/// - `{"kind":"foreignKey","property":"customerId","side":"b"}` —— 外键列落在 `side` 端对象表的
-///   `props->>'property'`，指向对端 pk（本轮 SearchAround 读侧按此编译 FK JOIN；写侧仍兜底 ol_edge）。
-/// - `{"kind":"joinTable",...}` / `{"kind":"intermediary",...}` —— 声明占位，编译暂回退 ol_edge（下一轮接）。
+/// `LinkTypeDef.backing` 原样落库、原样回读（前端 round-trip 不失真）；本枚举只是解析后的
+/// 引擎视图。**对外唯一口径 = 页面形状**（designer/速建气泡「属性映射」两端各选一个字段）：
+///
+/// - `{"fk":{"sourceProperty":"buyerId","targetProperty":"empNo","side":"b"}}`
+///   —— `side` 端对象表 `props->>'sourceProperty'` 与对端 `props->>'targetProperty'` 相等即建链；
+///   `targetProperty` 缺省 = 对端主键（`oo_<type>.pk` 列，Palantir Key 语义）；`side` 缺省 = `"a"`（源端持键）。
+/// - 历史/工具直写的内部 tagged 口径 `{"kind":"foreignKey","property","side"}` 继续兼容；
+///   空/非法/无法识别 → `Edge` 兜底（向后兼容，见 [`LinkTypeDef::backing_parsed`]）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum LinkBacking {
     /// 原生边表（默认）。
     #[default]
     Edge,
-    /// 外键列 backing：`side` 端对象表的 `property` 列存对端 pk。
-    ForeignKey { property: String, #[serde(default)] side: LinkEnd },
+    /// 外键 backing：`side` 端对象表的 `property` 属性与对端匹配——`target_property` 为 None/空时
+    /// 匹配对端 pk 列；非空时匹配对端 `props->>'target_property'`（SearchAround 按此编译 JOIN）。
+    ForeignKey {
+        property: String,
+        #[serde(default)]
+        side: LinkEnd,
+        /// 对端匹配属性 apiName；None/空 = 对端主键 pk 列。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_property: Option<String>,
+    },
     /// 连接表 backing（多对多；两列外键）——声明占位，编译暂回退 Edge。
     JoinTable {
         #[serde(default)] table: String,
@@ -338,11 +349,32 @@ pub struct LinkTypeDef {
 
 impl LinkTypeDef {
     /// 解析 `backing`（裸 JSON）为强类型 [`LinkBacking`]；空/非法/无法识别 → `Edge` 兜底（向后兼容）。
+    ///
+    /// 双认两种口径：页面形状 `{"fk":{...}}`（designer「属性映射」两端各选一字段，唯一对外口径）
+    /// 优先；内部 tagged `{"kind":...}`（历史/工具直写）兼容。
     pub fn backing_parsed(&self) -> LinkBacking {
-        if self.backing.is_null() {
+        let v = &self.backing;
+        if v.is_null() {
             return LinkBacking::Edge;
         }
-        serde_json::from_value(self.backing.clone()).unwrap_or(LinkBacking::Edge)
+        // 页面口径（designer 速建气泡「属性映射（落库 backing.fk）」两端各选一字段）。
+        if let Some(fk) = v.get("fk") {
+            let side = match fk.get("side").and_then(|x| x.as_str()) {
+                Some("b") | Some("B") => LinkEnd::B,
+                _ => LinkEnd::A,
+            };
+            let tp = json_str(fk, "targetProperty");
+            return LinkBacking::ForeignKey {
+                property: json_str(fk, "sourceProperty"),
+                side,
+                target_property: (!tp.is_empty()).then_some(tp),
+            };
+        }
+        // 内部 tagged 口径（{"kind":...}）。
+        if v.get("kind").is_some() {
+            return serde_json::from_value(v.clone()).unwrap_or(LinkBacking::Edge);
+        }
+        LinkBacking::Edge
     }
 
     pub fn validate(&self) -> crate::Result<()> {
@@ -357,21 +389,38 @@ impl LinkTypeDef {
                 "关系类型两端对象类型（objectTypeA / objectTypeB）不能为空".into(),
             ));
         }
-        // backing 若指定，须能解析且约束合法：ForeignKey 的 property 非空且为合法标识符。
-        if let LinkBacking::ForeignKey { property, .. } = self.backing_parsed() {
+        // backing 若指定，须能解析且约束合法：FK 的 sourceProperty 必填且为合法标识符，
+        // targetProperty 选填、给则同样须合法。
+        if let LinkBacking::ForeignKey { property, target_property, .. } = self.backing_parsed() {
             if property.trim().is_empty() {
                 return Err(crate::Error::Definition(
-                    "ForeignKey backing 的 property（外键属性名）不能为空".into(),
+                    "ForeignKey backing 的 sourceProperty（外端外键属性名）不能为空".into(),
                 ));
             }
             if !is_valid_api_name(&property) {
                 return Err(crate::Error::Definition(format!(
-                    "ForeignKey backing 的 property「{property}」非法（须字母/下划线开头，仅字母数字下划线）"
+                    "ForeignKey backing 的 sourceProperty「{property}」非法（须字母/下划线开头，仅字母数字下划线）"
                 )));
+            }
+            if let Some(tp) = target_property {
+                if !is_valid_api_name(&tp) {
+                    return Err(crate::Error::Definition(format!(
+                        "ForeignKey backing 的 targetProperty「{tp}」非法（须字母/下划线开头，仅字母数字下划线）"
+                    )));
+                }
             }
         }
         Ok(())
     }
+}
+
+/// 取 JSON 对象的字符串字段（trim；非字符串/缺失 → 空串）。
+fn json_str(v: &Value, key: &str) -> String {
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string()
 }
 
 // ─────────────────────── 接口 / 共享属性类型 ───────────────────────

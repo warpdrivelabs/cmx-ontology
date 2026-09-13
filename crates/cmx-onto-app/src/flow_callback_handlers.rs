@@ -53,7 +53,7 @@ pub async fn receive(Json(event): Json<Value>) -> Result<Json<ApiResp<Value>>> {
     if pk.is_empty() {
         return Ok(Json(ApiResp::ok(json!({ "skipped": true, "reason": "businessKey 为空" }))));
     }
-    let set = json!({ "reviewStatus": "已通过", "status": "合作中", "lastReviewAt": chrono::Utc::now().to_rfc3339() });
+    let set = json!({ "reviewStatus": "已通过", "lastReviewAt": chrono::Utc::now().to_rfc3339() });
     match object_store().modify_with_optlock(&object_type, &pk, &set, None).await {
         Ok((status, updated_at, _)) => Ok(Json(ApiResp::ok(json!({
             "skipped": false,
