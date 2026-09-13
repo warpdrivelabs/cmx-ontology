@@ -565,7 +565,7 @@ impl OntologyStore for PgOntologyStore {
         // 包含性子查询：implements @> "apiName" 标量）；其余四类 simple 清单不填（None）。
         let ds = self
             .query(
-                "SELECT i.api_name, i.display_name, i.updated_at, i.extends,                  (SELECT json_agg(o.api_name) FROM om_object_type o WHERE o.implements @> to_jsonb(i.api_name::text)) AS implements_by \
+                "SELECT i.api_name, i.display_name, i.status, i.updated_at, i.extends,                  (SELECT json_agg(o.api_name) FROM om_object_type o WHERE o.implements @> to_jsonb(i.api_name::text)) AS implements_by \
                  FROM om_interface i ORDER BY i.updated_at DESC",
                 vec![],
                 "om_interface_list",
@@ -582,6 +582,10 @@ impl OntologyStore for PgOntologyStore {
                     .and_then(|v| serde_json::from_value(v).ok()),
                 extends: get_opt_json(row, s, "extends")
                     .and_then(|v| serde_json::from_value(v).ok()),
+                // 状态富化（20260913）：元素目录接口「状态」列需要；runtime/kind 为函数专属恒 None。
+                runtime: None,
+                kind: None,
+                status: get_opt_string(row, s, "status").filter(|x| !x.is_empty()),
             });
         }
         Ok(out)
@@ -860,9 +864,11 @@ impl OntologyStore for PgOntologyStore {
     }
 
     async fn list_functions(&self, _tenant: &str) -> StoreResult<Vec<SimpleTypeMeta>> {
+        // 清单富化（20260913）：附 runtime/kind/status——元素目录「运行时/用途」列需要，
+        // 缺列时前端兜底恒显 query/feel。
         let ds = self
             .query(
-                "SELECT api_name, display_name, updated_at FROM om_function ORDER BY updated_at DESC",
+                "SELECT api_name, display_name, runtime, kind, status, updated_at FROM om_function ORDER BY updated_at DESC",
                 vec![],
                 "om_function_list",
             )
@@ -935,7 +941,8 @@ pub(crate) fn object_def_from_row(row: &Row, s: &Schema) -> StoreResult<ObjectTy
     })
 }
 
-/// 由 `SELECT api_name, display_name, updated_at` 的 DataSet 还原通用清单项。
+/// 由 `SELECT api_name, display_name, updated_at[, runtime, kind, status]` 的 DataSet 还原通用清单项。
+/// 富化列缺省（共享属性清单未选）时安全落 None——get_opt_string 对缺失列返回 None。
 fn simple_metas(ds: &DataSet) -> Vec<SimpleTypeMeta> {
     let s = ds.schema.as_ref();
     let mut out = Vec::new();
@@ -947,6 +954,10 @@ fn simple_metas(ds: &DataSet) -> Vec<SimpleTypeMeta> {
             // A3 富化仅接口填充（见 list_interfaces）；共享属性/动作/函数恒 None。
             implements_by: None,
             extends: None,
+            // 20260913 富化：仅函数填充（见 list_functions）。
+            runtime: get_opt_string(row, s, "runtime").filter(|x| !x.is_empty()),
+            kind: get_opt_string(row, s, "kind").filter(|x| !x.is_empty()),
+            status: get_opt_string(row, s, "status").filter(|x| !x.is_empty()),
         });
     }
     out

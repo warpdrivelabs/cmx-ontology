@@ -323,6 +323,9 @@ impl PgOntologyStore {
                 updated_at: get_opt_ts(row, s, "updated_at"),
                 implements_by: None,
                 extends: None,
+                runtime: None,
+                kind: None,
+                status: None,
             });
         }
         Ok((out, total))

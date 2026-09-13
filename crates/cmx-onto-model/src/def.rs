@@ -648,6 +648,15 @@ pub struct SimpleTypeMeta {
     /// 继承的父接口链（清单富化 A3，仅接口填充；其余三类恒 None）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extends: Option<Vec<String>>,
+    /// 运行时（清单富化 20260913，仅函数填充；接口/共享属性恒 None）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
+    /// 用途（清单富化 20260913，仅函数填充；接口/共享属性恒 None）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// 状态（清单富化 20260913，函数/接口填充；共享属性恒 None）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
 }
 
 /// 动作类型清单项（P2-0 清单富化：含参数与作用对象类型，前端据此按对象类型过滤动作）。
