@@ -186,6 +186,8 @@ where
         )
         // 批量执行（P1-3；固定路径无路径参数，apiName 入 body——AGENTS §四.6）
         .route("/action-types/execute-batch", post(action_handlers::execute_batch))
+        // 动作可见性 PEP 预检（P2-1；固定路径，动作列表入 body）
+        .route("/action-types/check-permission", post(action_handlers::check_permission))
         .route("/action-logs", get(action_handlers::list_action_logs))
         .route("/action-outbox", get(action_handlers::list_action_outbox))
         .route("/action-outbox/config", get(action_handlers::outbox_config))

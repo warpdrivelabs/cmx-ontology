@@ -15,9 +15,9 @@ use cmx_database_pg::{
     SqlParams,
 };
 use cmx_onto_model::{
-    ActionTypeDef, FunctionDef, InterfaceDef, LinkTypeDef, LinkTypeMeta, ObjectTypeDef,
-    ObjectTypeMeta, OntologyManifest, OntologyStore, OntologyVersionMeta, PropertyTypeDef,
-    SharedPropertyTypeDef, SimpleTypeMeta, StoreError, StoreResult, TypeStatus,
+    ActionTypeDef, ActionTypeMeta, FunctionDef, InterfaceDef, LinkTypeDef, LinkTypeMeta,
+    ObjectTypeDef, ObjectTypeMeta, OntologyManifest, OntologyStore, OntologyVersionMeta,
+    PropertyTypeDef, SharedPropertyTypeDef, SimpleTypeMeta, StoreError, StoreResult, TypeStatus,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -702,17 +702,23 @@ impl OntologyStore for PgOntologyStore {
 
     // ─────────────────────────── 动作类型 ───────────────────────────
 
-    async fn upsert_action_type(&self, _tenant: &str, def: &ActionTypeDef) -> StoreResult<()> {
+    async fn upsert_action_type(
+        &self,
+        _tenant: &str,
+        def: &ActionTypeDef,
+        target_object_types: &[String],
+    ) -> StoreResult<()> {
         let now = Utc::now();
         self.exec(
             "INSERT INTO om_action_type \
              (api_name, display_name, description, parameters, logic, validations, side_effects, \
-              function_backing, status, created_at, updated_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10) \
+              function_backing, status, target_object_types, created_at, updated_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11) \
              ON CONFLICT (api_name) DO UPDATE SET display_name=EXCLUDED.display_name, \
               description=EXCLUDED.description, parameters=EXCLUDED.parameters, logic=EXCLUDED.logic, \
               validations=EXCLUDED.validations, side_effects=EXCLUDED.side_effects, \
-              function_backing=EXCLUDED.function_backing, status=EXCLUDED.status, updated_at=EXCLUDED.updated_at",
+              function_backing=EXCLUDED.function_backing, status=EXCLUDED.status, \
+              target_object_types=EXCLUDED.target_object_types, updated_at=EXCLUDED.updated_at",
             vec![
                 DataValue::String(def.api_name.clone()),
                 DataValue::String(def.display_name.clone()),
@@ -723,6 +729,7 @@ impl OntologyStore for PgOntologyStore {
                 json_or_default(&def.side_effects, "[]"),
                 opt_str(&def.function_backing),
                 DataValue::String(enum_to_str(&def.status)),
+                json_arr(&target_object_types),
                 DataValue::DateTime(now),
             ],
         )
@@ -760,15 +767,34 @@ impl OntologyStore for PgOntologyStore {
         }))
     }
 
-    async fn list_action_types(&self, _tenant: &str) -> StoreResult<Vec<SimpleTypeMeta>> {
+    async fn list_action_types(&self, _tenant: &str) -> StoreResult<Vec<ActionTypeMeta>> {
+        // P2-0 清单富化：带 parameters/status/target_object_types（前端按对象类型过滤动作；
+        // target 为保存期物化列，boot 回填存量，GIN 索引支撑按类型查询）。
         let ds = self
             .query(
-                "SELECT api_name, display_name, updated_at FROM om_action_type ORDER BY updated_at DESC",
+                "SELECT api_name, display_name, status, parameters, target_object_types, updated_at \
+                 FROM om_action_type ORDER BY updated_at DESC",
                 vec![],
                 "om_action_type_list",
             )
             .await?;
-        Ok(simple_metas(&ds))
+        let s = ds.schema.as_ref();
+        let mut out = Vec::new();
+        for row in ds.iter() {
+            let targets = get_json(row, s, "target_object_types")
+                .ok()
+                .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
+                .unwrap_or_default();
+            out.push(ActionTypeMeta {
+                api_name: get_opt_string(row, s, "api_name").unwrap_or_default(),
+                display_name: get_opt_string(row, s, "display_name").unwrap_or_default(),
+                status: parse_status(row, s),
+                parameters: get_json(row, s, "parameters").unwrap_or(Value::Null),
+                target_object_types: targets,
+                updated_at: get_opt_ts(row, s, "updated_at"),
+            });
+        }
+        Ok(out)
     }
 
     async fn delete_action_type(&self, _tenant: &str, api_name: &str) -> StoreResult<u64> {

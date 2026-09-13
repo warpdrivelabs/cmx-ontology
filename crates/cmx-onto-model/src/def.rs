@@ -585,7 +585,7 @@ pub struct LinkTypeMeta {
     pub dam_b: Option<DamRef>,
 }
 
-/// 通用类型清单项（接口/共享属性/动作/函数）。
+/// 通用类型清单项（接口/共享属性/函数；动作用下方富化的 [`ActionTypeMeta`]）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SimpleTypeMeta {
@@ -593,12 +593,32 @@ pub struct SimpleTypeMeta {
     pub display_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<DateTime<Utc>>,
-    /// 实现者清单（清单富化 A3，仅接口填充；其余四类恒 None）。
+    /// 实现者清单（清单富化 A3，仅接口填充；其余三类恒 None）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub implements_by: Option<Vec<String>>,
-    /// 继承的父接口链（清单富化 A3，仅接口填充；其余四类恒 None）。
+    /// 继承的父接口链（清单富化 A3，仅接口填充；其余三类恒 None）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extends: Option<Vec<String>>,
+}
+
+/// 动作类型清单项（P2-0 清单富化：含参数与作用对象类型，前端据此按对象类型过滤动作）。
+///
+/// `target_object_types` 是**保存期派生的物化字段**（语义真源仍是 `parameters`/`logic`，
+/// 对齐 Palantir"作用对象由参数类型声明"——本字段只为清单查询效率而存在，boot 时回填存量）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionTypeMeta {
+    pub api_name: String,
+    pub display_name: String,
+    pub status: TypeStatus,
+    /// 表单参数（原样；前端渲染表单/按类型过滤用）。
+    #[serde(default)]
+    pub parameters: Value,
+    /// 作用对象类型（保存期从 parameters + logic 派生去重；GIN 索引支持按类型查动作）。
+    #[serde(default)]
+    pub target_object_types: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 /// 本体全量清单（建模台/OSDK 生成的输入）。
@@ -609,7 +629,7 @@ pub struct OntologyManifest {
     pub link_types: Vec<LinkTypeMeta>,
     pub interfaces: Vec<SimpleTypeMeta>,
     pub shared_properties: Vec<SimpleTypeMeta>,
-    pub action_types: Vec<SimpleTypeMeta>,
+    pub action_types: Vec<ActionTypeMeta>,
     pub functions: Vec<SimpleTypeMeta>,
 }
 

@@ -647,6 +647,45 @@ fn collect_param_refs(v: &Value, out: &mut Vec<String>) {
     }
 }
 
+/// 派生动作的**作用对象类型**（P2-0 物化列 `target_object_types` 的计算真源；对齐
+/// Palantir"作用对象由参数类型声明"——本派生只为清单查询效率，不引入新语义）：
+/// ① `parameters` 中 `type == object/objectSet` 且 `objectType` 非空的声明；
+/// ② `logic` 中对象类编辑（create/createOrModify/modify/delete）的 `objectType`。
+/// 去重保序；链接类编辑不产生对象类型。函数背书动作以其显式声明的 parameters 为准。
+pub fn derive_target_object_types(parameters: &Value, logic: &Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let push = |s: &str, out: &mut Vec<String>| {
+        if !s.is_empty() && !out.iter().any(|x| x == s) {
+            out.push(s.to_string());
+        }
+    };
+    if let Some(ps) = parameters.as_array() {
+        for p in ps {
+            let ty = p.get("type").and_then(Value::as_str).unwrap_or("");
+            if ty != "object" && ty != "objectSet" {
+                continue;
+            }
+            if let Some(ot) = p.get("objectType").and_then(Value::as_str) {
+                push(ot, &mut out);
+            }
+        }
+    }
+    if let Some(ops) = logic.as_array() {
+        for op in ops {
+            let kind = op.get("op").and_then(Value::as_str).unwrap_or("");
+            if matches!(
+                kind,
+                "createObject" | "createOrModifyObject" | "modifyObject" | "deleteObject"
+            ) {
+                if let Some(ot) = op.get("objectType").and_then(Value::as_str) {
+                    push(ot, &mut out);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// 保存期派生缺失参数（P1-2，四类来源并集；只增不删）：① logic 的 `$name` 引用；
 /// ② logic 的 `src:"param"/"paramProperty"` 显式引用；③ side_effects 的 `$name` 引用。
 /// （④ 函数入参派生需 FunctionDef，由壳层 handler 补充。）
@@ -1086,6 +1125,28 @@ mod tests {
             json!([{ "name": "id", "required": true }]),
         );
         assert!(derive_missing_params(&mut a).is_empty());
+    }
+
+    #[test]
+    fn derive_target_object_types_from_params_and_logic() {
+        // 参数声明 + logic 目标取并集去重；标量参数与链接编辑不计入
+        let parameters = json!([
+            { "name": "orderId", "type": "object", "objectType": "Order" },
+            { "name": "ids", "type": "objectSet", "objectType": "Order" },
+            { "name": "memo", "type": "string" },
+            { "name": "noType", "type": "object" }
+        ]);
+        let logic = json!([
+            { "op": "modifyObject", "objectType": "Order", "pk": "K" },
+            { "op": "addLink", "link": "L", "aPk": "1", "bPk": "2" },
+            { "op": "createOrModifyObject", "objectType": "Ticket", "pk": "K" }
+        ]);
+        assert_eq!(
+            derive_target_object_types(&parameters, &logic),
+            vec!["Order".to_string(), "Ticket".to_string()]
+        );
+        // 空定义 → 空
+        assert!(derive_target_object_types(&json!([]), &json!([])).is_empty());
     }
 
     #[test]

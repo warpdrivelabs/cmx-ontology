@@ -486,6 +486,62 @@ pub async fn dry_run_action(
     execute_action(Path(api_name), Json(req)).await
 }
 
+// ───────────────────────── PEP 预检（P2-1） ─────────────────────────
+
+/// 批量预检请求体（固定路径 POST /action-types/check-permission；AGENTS §四.6 无路径参数）。
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CheckPermissionReq {
+    pub actions: Vec<String>,
+    pub subjects: Vec<String>,
+}
+
+/// POST /action-types/check-permission —— 动作可见性预检（前端据此**不渲染**被拒按钮）。
+///
+/// 口径与执行期 PEP 同源：目标类型由定义静态解析（`resolve_edits` 空参解析失败时回退到
+/// 参数声明派生），复用 `PolicyStore::check_action_permission`（deny_actions 硬门）。
+/// 已知残余风险（方案 §六.2）：函数动作运行期目标类型才可知，预检可能放行但执行 403（硬门兜底）。
+pub async fn check_permission(Json(req): Json<CheckPermissionReq>) -> ActionOutcome {
+    let tenant = current_tenant();
+    let subjects = subjects_of(&req.subjects);
+    if subjects.is_empty() {
+        return Err(ActionErr::forbidden("无法确定执行主体（subjects 为空）"));
+    }
+    let mut results = Vec::new();
+    for api_name in &req.actions {
+        let name = api_name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let Some(action) = store()
+            .get_action_type(&tenant, name)
+            .await
+            .map_err(|e| ActionErr::internal(format!("装载动作类型 {name} 失败: {e}")))?
+        else {
+            results.push(json!({ "action": name, "allowed": false, "reason": "notFound" }));
+            continue;
+        };
+        // 同源口径：优先静态解析编辑取作用域；解析失败回退参数声明派生
+        let scopes = match resolve_edits(&action, &json!({}), &json!({}), None, None) {
+            Ok(edits) => edit_object_types(&edits),
+            Err(_) => {
+                cmx_onto_model::derive_target_object_types(&action.parameters, &action.logic)
+            }
+        };
+        let denied = PolicyStore::new(crate::tenancy::current_db_id())
+            .check_action_permission(&scopes, name, &subjects)
+            .await
+            .map_err(|e| ActionErr::internal(format!("权限检查失败: {e}")))?;
+        results.push(json!({
+            "action": name,
+            "allowed": denied.is_none(),
+            "deniedBy": denied,
+            "scopes": scopes,
+        }));
+    }
+    Ok(ok_response(json!({ "results": results })))
+}
+
 // ───────────────────────── 批量执行（P1-3） ─────────────────────────
 
 /// 单批上限：env `ONTO_ACTION_BATCH_MAX` → ConfigManager `onto.action_batch_max_items` → 100。

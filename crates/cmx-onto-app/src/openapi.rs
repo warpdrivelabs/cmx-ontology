@@ -63,6 +63,7 @@ pub async fn openapi_json() -> Json<Value> {
             "/action-types/{apiName}/execute": p("执行动作（校验→事务写回→Outbox；响应含 proposedChanges/executionLog）", &["post"], "动作"),
             "/action-types/{apiName}/dry-run": p("动作试算（不落库；proposedChanges 对比 + 执行日志分解）", &["post"], "动作"),
             "/action-types/execute-batch": p("批量执行（同事务逐项、任一失败全回滚；apiName 入 body）", &["post"], "动作"),
+            "/action-types/check-permission": p("动作可见性 PEP 预检（前端不渲染被拒动作；动作列表入 body）", &["post"], "动作"),
             "/action-logs": p("动作执行审计", &["get"], "动作"),
             "/action-outbox": p("副作用 Outbox", &["get"], "动作"),
             "/action-outbox/{id}/dispatched": p("回标 Outbox 投递", &["post"], "动作"),

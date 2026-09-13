@@ -433,14 +433,17 @@ pub async fn save_action_type(Json(mut def): Json<ActionTypeDef>) -> Result<Json
         }
         def.parameters = json!(ps);
     }
+    // P2-0：派生作用对象类型并物化落列（语义真源仍是 parameters/logic；清单查询用）。
+    let targets = cmx_onto_model::derive_target_object_types(&def.parameters, &def.logic);
     store()
-        .upsert_action_type(&tenant, &def)
+        .upsert_action_type(&tenant, &def, &targets)
         .await
         .map_err(|e| OntoError::internal_error(format!("保存动作类型失败: {e}")))?;
     Ok(Json(ApiResp::ok(json!({
         "apiName": def.api_name,
         "saved": true,
         "derivedParams": derived,
+        "targetObjectTypes": targets,
     }))))
 }
 
