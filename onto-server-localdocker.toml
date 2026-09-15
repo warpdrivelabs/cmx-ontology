@@ -1,0 +1,23 @@
+# [临时·不提交] cmx-onto-server 本地 Docker PG 配置——仅用于本机跑 E2E（远程 192.168.157.46 不可达）。
+# 用法：CONFIG_FILE=onto-server-localdocker.toml ./onto.sh
+[server]
+host = "0.0.0.0"
+port = 8097
+log_dir = "logs"
+log_level = "info"
+graceful_timeout_secs = 10
+
+[[databases]]
+db_id = "onto_pg"
+db_name = "本体平台库(本地docker)"
+db_type = "postgres"
+db_url = "postgres://postgres:postgres@127.0.0.1:5432/cmx_fico"
+default = true
+
+[auth]
+mode = "off"
+tenancy = "single"
+api_keys = "cmx_sk_dev_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6:default"
+
+[assets]
+ui_native_dir = "../cmx-container/assets/onto/web/ui-native"

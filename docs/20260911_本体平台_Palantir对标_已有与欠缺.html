@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>本体平台 × Palantir 本体对标：已有什么、缺什么（2026-09-11）</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1d2733; --ink2:#5a6b7d; --line:#e3e8ee;
+    --accent:#0b6bcb; --accent-soft:#e8f1fb;
+    --ok:#0f8a43; --ok-bg:#e5f5ec; --part:#b26a00; --part-bg:#fdf2df;
+    --miss:#c0392b; --miss-bg:#fbe9e7; --no:#66707d; --no-bg:#eceff2;
+    --code-bg:#eef1f4; --warn:#a04b00; --warn-bg:#fff4e0;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#14181d; --card:#1c2229; --ink:#dfe6ee; --ink2:#93a1b1; --line:#2c3540;
+      --accent:#5aa7ee; --accent-soft:#1d2c3d;
+      --ok:#5ad38b; --ok-bg:#16301f; --part:#eeb457; --part-bg:#33270f;
+      --miss:#f08a7c; --miss-bg:#3a1d18; --no:#9aa6b2; --no-bg:#242c35;
+      --code-bg:#242c35; --warn:#eeb457; --warn-bg:#33270f;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"Segoe UI","Microsoft YaHei",system-ui,-apple-system,sans-serif;
+    line-height:1.65;font-size:15px}
+  .wrap{max-width:1080px;margin:0 auto;padding:28px 20px 80px}
+  h1{font-size:26px;line-height:1.35;margin:8px 0 6px}
+  h2{font-size:20px;margin:44px 0 12px;padding-top:18px;border-top:1px solid var(--line)}
+  h3{font-size:16px;margin:26px 0 8px}
+  p{margin:8px 0}
+  .sub{color:var(--ink2);font-size:14px;margin:0 0 14px}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 4px}
+  .chip{background:var(--accent-soft);color:var(--accent);border-radius:20px;
+    padding:3px 12px;font-size:12.5px;font-weight:600}
+  .box{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 22px;margin:14px 0}
+  .tldr{border-left:4px solid var(--accent)}
+  .analogy{border-left:4px solid var(--part);background:var(--card)}
+  .analogy b{color:var(--part)}
+  code{background:var(--code-bg);border-radius:5px;padding:1px 6px;font-size:12.5px;
+    font-family:Consolas,"Courier New",monospace}
+  .statbar{display:flex;flex-wrap:wrap;gap:12px;margin:16px 0}
+  .stat{flex:1 1 150px;background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:12px 16px;text-align:center}
+  .stat .n{font-size:26px;font-weight:700}
+  .stat .t{font-size:12.5px;color:var(--ink2)}
+  .s-ok{color:var(--ok)} .s-part{color:var(--part)} .s-miss{color:var(--miss)} .s-no{color:var(--no)}
+  nav{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 18px;margin:18px 0}
+  nav a{color:var(--accent);text-decoration:none;margin-right:16px;font-size:13.5px;white-space:nowrap}
+  nav a:hover{text-decoration:underline}
+  .filterbar{display:flex;gap:8px;margin:6px 0 14px;flex-wrap:wrap}
+  .fbtn{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:20px;
+    padding:4px 14px;font-size:13px;cursor:pointer}
+  .fbtn.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);
+    border-radius:10px;overflow:hidden;font-size:13.5px;margin:10px 0 6px}
+  th{background:var(--accent-soft);color:var(--ink);text-align:left;padding:9px 12px;font-size:13px;white-space:nowrap}
+  td{border-top:1px solid var(--line);padding:9px 12px;vertical-align:top}
+  tr[data-s]{display:revert}
+  body.f-ok tr[data-s]:not([data-s=ok]),
+  body.f-part tr[data-s]:not([data-s=part]),
+  body.f-miss tr[data-s]:not([data-s=miss]){display:none}
+  .pill{display:inline-block;border-radius:12px;padding:1px 10px;font-size:12px;font-weight:700;white-space:nowrap}
+  .pill.ok{background:var(--ok-bg);color:var(--ok)} .pill.part{background:var(--part-bg);color:var(--part)}
+  .pill.miss{background:var(--miss-bg);color:var(--miss)} .pill.no{background:var(--no-bg);color:var(--no)}
+  .dim{color:var(--ink2)}
+  .ev{font-size:12px;color:var(--ink2)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin:10px 0}
+  .card h4{margin:0 0 6px;font-size:14.5px}
+  .p0{border-left:4px solid var(--miss)} .p1{border-left:4px solid var(--part)}
+  .p2{border-left:4px solid var(--accent)} .p3{border-left:4px solid var(--no)}
+  .pdebt{border-left:4px solid var(--part)}
+  ul{margin:6px 0;padding-left:22px}
+  li{margin:4px 0}
+  .foot{margin-top:50px;padding-top:14px;border-top:1px solid var(--line);color:var(--ink2);font-size:12.5px}
+  .foot a{color:var(--accent)}
+  @media print{body{background:#fff}.filterbar,nav{display:none}.box,.card,table{break-inside:avoid}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <p class="sub">CMX 技术对标报告 · 仅供内部评估</p>
+  <h1>本体平台 × Palantir 本体对标<br>已有什么 · 缺什么</h1>
+  <div class="chips">
+    <span class="chip">对标口径：Palantir Foundry Ontology（公开文档）</span>
+    <span class="chip">本地基线：cmx-ontology main@567efe4（2026-09-11，与远端同步）</span>
+    <span class="chip">覆盖：backend/cmx-ontology + assets/onto 页面 + cmx-ontology-graph + cmx-decision-graph</span>
+    <span class="chip">矩阵 60 个能力点</span>
+  </div>
+
+  <div class="box tldr">
+    <p><b>一句话总评：骨架已经是 Palantir 同款，欠的是平台设施和生态。</b>
+    四根台柱——六类元模型、对象集代数、事务动作 + Outbox 副作用、版本快照——与 Foundry 本体<b>同构</b>，不用推倒重来；
+    差距集中在四块：<b>安全身份</b>（S1/S2 两枚 P0 债）、<b>增量与调度</b>、<b>历史与搜索</b>、<b>AI / SDK 生态</b>。</p>
+  </div>
+
+  <div class="box analogy">
+    <p><b>一个类比</b>：Foundry 把企业数据造成一张「活地图」——点是地点（对象）、线是路（关系），
+    还能直接在地图上办事（动作写回、触发审批）。本地平台已经<b>把这张图画出来了、也能在上面办事</b>；
+    差的是地图的「门禁系统」（可信身份与权限）、「路况实时更新」（增量 / 调度）、「搜索框」（检索）和「导航助手」（AI）。</p>
+  </div>
+
+  <div class="statbar">
+    <div class="stat"><div class="n s-ok">26</div><div class="t">✅ 已有（功能齐装）</div></div>
+    <div class="stat"><div class="n s-part">15</div><div class="t">🟡 部分（能用但有缺口）</div></div>
+    <div class="stat"><div class="n s-miss">19</div><div class="t">❌ 欠缺（没有）</div></div>
+    <div class="stat"><div class="n s-no">4</div><div class="t">⛔ 明确不跟（有意不做）</div></div>
+  </div>
+
+  <nav>
+    <a href="#s1">① 两边是什么</a>
+    <a href="#s2">② 对标总矩阵</a>
+    <a href="#s3">③ 已经有了</a>
+    <a href="#s4">④ 还欠缺</a>
+    <a href="#s5">⑤ 明确不跟</a>
+    <a href="#s6">⑥ 一页纸结论</a>
+  </nav>
+
+  <h2 id="s1">① 三分钟看懂：两边分别是什么</h2>
+  <p><b>Palantir Foundry 本体（Ontology）</b>是 Foundry 平台的语义层核心：把湖里的数据「翻译」成业务对象
+  （客户、订单、工厂、设备），对象之间连成关系网，再配上一层<b>动作（Action）</b>让业务人员能直接在对象上办事、写回数据，
+  配上<b>函数（Function）</b>承载业务计算，最后用 Workshop / Graph / Map / Object Explorer 等应用直接消费这张网。
+  官方叫法是「企业的数字孪生 / 语义层」。</p>
+  <p><b>CMX 本体平台（cmx-ontology，:8097）</b>走的是同一条路线：六类元模型元素
+  （对象类型 / 关系类型 / 接口 / 共享属性 / 动作类型 / 函数）+ PostgreSQL 物化（定义表 om_* + 每类型一张 oo_&lt;Type&gt; + 公共边表 ol_edge）
+  + 动作事务与副作用 + 版本快照 + 设计器 / 浏览器 / 工作台三个业务页面。四个 crate 一芯多壳，门户经 OntoProxyModule 反代 <code>/api/onto/*</code>。</p>
+
+  <h3>术语对照（Foundry 叫法 ↔ 本地叫法）</h3>
+  <table>
+    <tr><th style="width:32%">Palantir Foundry</th><th>CMX 本体平台</th><th style="width:34%">落点（点哪里）</th></tr>
+    <tr><td>Object Type 对象类型</td><td>对象类型</td><td class="ev"><code>om_object_type</code>，物化表 <code>oo_&lt;Type&gt;</code></td></tr>
+    <tr><td>Link Type 关系类型</td><td>关系类型</td><td class="ev"><code>om_link_type</code>，边表 <code>ol_edge</code></td></tr>
+    <tr><td>Property 属性</td><td>属性（props JSONB）</td><td class="ev">16 种基型 + 复合层块</td></tr>
+    <tr><td>Interface 接口</td><td>接口</td><td class="ev"><code>om_interface</code>，implements 强校验</td></tr>
+    <tr><td>Shared Property 共享属性</td><td>共享属性</td><td class="ev"><code>om_shared_property</code></td></tr>
+    <tr><td>Action Type 动作类型</td><td>动作类型</td><td class="ev"><code>om_action_type</code>，审计 <code>oe_action_log</code></td></tr>
+    <tr><td>Function（TypeScript）</td><td>函数（FEEL / Rhai）</td><td class="ev"><code>om_function</code>，<code>POST /functions/{api}/evaluate</code></td></tr>
+    <tr><td>Object Set 对象集</td><td>对象集代数</td><td class="ev"><code>POST /object-sets/load</code>、<code>/object-sets/aggregate</code></td></tr>
+    <tr><td>Pipeline 管道</td><td>漏斗 Funnel 同步</td><td class="ev"><code>om_source_mapping</code>，<code>/funnel/*</code></td></tr>
+    <tr><td>Workshop 应用搭建</td><td>对象 360 / 动作中心</td><td class="ev">页面 portal.onto.workshop</td></tr>
+    <tr><td>Object Explorer</td><td>对象浏览器</td><td class="ev">页面 portal.onto.explorer</td></tr>
+    <tr><td>Graph 图应用</td><td>本体设计器画布</td><td class="ev">页面 portal.onto.designer（cmx-ontology-graph）</td></tr>
+    <tr><td>Ontology SDK（TS/Python/Java）</td><td>TS SDK 生成</td><td class="ev"><code>GET /osdk/typescript</code></td></tr>
+    <tr><td>Markings 敏感标记</td><td>marking 字段 + deny_markings</td><td class="ev"><code>om_policy</code></td></tr>
+    <tr><td>Ontology Branching 分支</td><td>草稿双轨（简版）</td><td class="ev"><code>om_draft</code> + <code>/versions/diff</code>、<code>/versions/restore</code></td></tr>
+    <tr><td>Subscriptions 订阅</td><td>SSE 事件流（简版）</td><td class="ev"><code>GET /events</code></td></tr>
+    <tr><td>Automate 自动化</td><td class="s-miss"><b>无</b>（全靠人点 / 外部 cron）</td><td class="ev">全仓无定时器</td></tr>
+    <tr><td>AIP（AI 助手/智能体）</td><td class="s-miss"><b>无</b>（MCP 工具面未建）</td><td class="ev">规划随 cmx-agent</td></tr>
+  </table>
+
+  <h2 id="s2">② 对标总矩阵（60 个能力点）</h2>
+  <p class="dim">点下面的按钮可以只看某一类。<b>已有</b>=功能齐装可用；<b>部分</b>=能用但有明确缺口；<b>欠缺</b>=没有。</p>
+  <div class="filterbar">
+    <button class="fbtn on" onclick="fset('',this)">全部 60</button>
+    <button class="fbtn" onclick="fset('ok',this)">✅ 已有 26</button>
+    <button class="fbtn" onclick="fset('part',this)">🟡 部分 15</button>
+    <button class="fbtn" onclick="fset('miss',this)">❌ 欠缺 19</button>
+  </div>
+
+  <h3>A. 元模型——怎么描述业务（9 项）</h3>
+  <table>
+    <tr><th style="width:8%">状态</th><th style="width:20%">能力</th><th style="width:32%">Palantir 怎么做</th><th>本体现在怎样</th></tr>
+    <tr data-s="ok"><td><span class="pill ok">✅ 已有</span></td><td><b>对象类型</b></td><td>业务实体挂管道数据，含主键 / 标题 / 图标 / 生命周期</td><td>全套：主键 / 标题属性、experimental→active→deprecated 状态机、DAM 域归属、行级乐观锁。<span class="ev"><code>POST /object-types</code> + <code>/validate</code> + <code>/batch</code></span></td></tr>
+    <tr data-s="ok"><td><span class="pill ok">✅ 已有</span></td><td><b>属性系统</b></td><td>丰富基型 + 复合类型 + 约束</td><td>16 种基型（含 Geohash / Vector）+ array / struct 可嵌套层块 + 约束 / 语义类型 / isIndexed 标记。<span class="ev">PropertyTypeDef</span></td></tr>
+    <tr data-s="ok"><td><span class="pill ok">✅ 已有</span></td><td><b>共享属性</b></td><td>属性复用，跨类型统一口径</td><td>独立定义 + 批量接口。<span class="ev"><code>/shared-properties</code> + <code>/batch</code></span></td></tr>
+    <tr data-s="ok"><td><span class="pill ok">✅ 已有</span></td><td><b>接口 Interface</b></td><td>对象类型实现接口契约</td><td>支持 extends 继承；implements 保存时强校验共享属性契约，缺了直接拒绝；画布虚线闭环。<span class="ev">validate_implements</span></td></tr>
+    <tr data-s="part"><td><span class="pill part">🟡 部分</span></td><td><b>关系类型</b></td><td>基数 / 角色 / 物理落地方式灵活</td><td>三种基数 + roleA/roleB 全有；4 种 backing 中 <b>edge 全量可用</b>、foreignKey 仅读侧编译（写侧兜底边表）、joinTable / intermediary 只有声明没实现。<span class="ev">def.rs、compile.rs:135</span></td></tr>
+    <tr data-s="miss"><td><span class="pill miss">❌ 欠缺</span></td><td><b>时间序列属性</b></td><td>传感器 / 指标随时间打点、时序图表</td><td>无</td></tr>
+    <tr data-s="miss"><td><span class="pill miss">❌ 欠缺</span></td><td><b>媒体 / 附件属性</b></td><td>图片 / 文件挂对象，画廊呈现</td><td>无</td></tr>
+    <tr data-s="part"><td><span class="pill part">🟡 部分</span></td><td><b>地理能力</b></td><td>geo 基型 + 空间索引 + 地图呈现</td><td>Geohash / Vector 基型已声明；无空间索引、无地图应用</td></tr>
+    <tr data-s="part"><td><span class="pill part">🟡 部分</span></td><td><b>建模分支与提案</b></td><td>sandbox 分支、提案、合并评审</td><td>草稿双轨 + 版本 diff / 回滚本周刚上（P2）；但单人单草稿区，无多分支并行与提案评审流。<span class="ev">om_draft + /versions/diff</span></td></tr>
+  </table>
+
+  <h3>B. 数据接入与物化——数据怎么进来（7 项）</h3>
+  <table>
+    <tr><th style="width:8%">状态</th><th style="width:20%">能力</th><th style="width:32%">Palantir 怎么做</th><th>本体现在怎样</th></tr>
+    <tr data-s="ok"><td><span class="pill ok">✅ 已有</span></td><td><b>源 → 对象同步</b></td><td>Pipeline builds 全量 / 增量物化</td><td>漏斗 Funnel：源映射（sourceQuery / keyColumns / propertyMap）→ 逐行校验 → 合格批量 upsert、违规进隔离区；全量幂等。<span class="ev">funnel.rs、funnel_store.rs、<code>/funnel/sync/{type}</code></span></td></tr>
+    <tr data-s="ok"><td><span class="pill ok">✅ 已有</span></td><td><b>元数据侧导入</b></td><td>—</td><td><code>/import/doc</code>、<code>/import/dct</code> 接 cmx-model 归一化 JSON，cmx_origin 字段回指来源。</td></tr>
+    <tr data-s="ok"><td><span class="pill ok">✅ 已有</span></td><td><b>同步可观测</b></td><td>builds 健康检查</td><td>隔离区查询 + 三段管道状态（extract / map / index）。<span class="ev"><code>/funnel/quarantine</code>、<code>/funnel/pipeline-status/{type}</code></span></td></tr>
+    <tr data-s="miss"><td><span class="pill miss">❌ 欠缺</span></td><td><b>增量同步 / 水位</b></td><td>增量索引，只处理变化</td><td>只有全量重推，无水位记录（T4）</td></tr>
+    <tr data-s="miss"><td><span class="pill miss">❌ 欠缺</span></td><td><b>调度与自动化</b></td><td>Automate / 定时 builds</td><td>全仓无定时器：同步、副作用派发都要人点或外部 cron（T1）</td></tr>
+    <tr data-s="miss"><td><span class="pill miss">❌ 欠缺</span></td><td><b>流式接入</b></td><td>streaming 数据实时进对象</td><td>无</td></tr>
+    <tr data-s="miss"><td><span class="pill miss">❌ 欠缺</span></td><td><b>入站 webhook / ingest</b></td><td>外部事件推着更新对象</td><td>无入站通道（副作用出站有、入站没有，T6）</td></tr>
+  </table>
+
+  <h3>C. 对象数据面——数据怎么查（8 项）</h3>
+  <table>
+    <tr><th style="width:8%">状态</th><th style="width:20%">能力</th><th style="width:32%">Palantir 怎么做</th><th>本体现在怎样</th></tr>
+    <tr data-s="ok"><td><span class="pill ok">✅ 已有</span></td><td><b>对象物化存储</b></td><td>Object Storage V2 快照 + 更新</td><td>每类型一张 <code>oo_&lt;type&gt;</code>（pk / title / props JSONB）写时懒建，加字段零 DDL；同构的折中路线。</td></tr>
+    <tr data-s="ok"><td><span class="pill ok">✅ 已有</span></td><td><b>对象集代数</b></td><td>Object Set API：过滤 / 钻取 / 组合</td><td>Base / Filter / SearchAround / Union / Intersect / Subtract / Static 编译成<b>一条</b> SQL；标识符白名单 + 全参数绑定防注入。<span class="ev">objectset.rs、compile.rs</span></td></tr>
+    <tr data-s="ok"><td><span class="pill ok">✅ 已有</span></td><td><b>关系钻取</b></td><td>search-around</td><td>代数内建 + 便捷端点。<span class="ev"><code>GET /objects/{type}/{pk}/links/{link}</code></span></td></tr>
+    <tr data-s="part"><td><span class="pill part">🟡 部分</span></td><td><b>聚合分析</b></td><td>count / avg / min / max / sum / 透视</td><td>只有 Count / GroupCount / GroupSum 三种</td></tr>
+    <tr data-s="miss"><td><span class="pill miss">❌ 欠缺</span></td><td><b>全文搜索</b></td><td>全局搜索、对象属性检索</td><td>无（连 pg_trgm 都还没开）</td></tr>
+    <tr data-s="miss"><td><span class="pill miss">❌ 欠缺</span></td><td><b>语义 / 向量搜索</b></td><td>AI 语义检索对象</td><td>无</td></tr>
+    <tr data-s="part"><td><span class="pill part">🟡 部分</span></td><td><b>属性二级索引</b></td><td>常查属性自动建物理索引</td><td>isIndexed 只存了定义、物理索引没消费，现在只有 pk + title 索引（Q1）。<span class="ev">object_store.rs</span></td></tr>
+    <tr data-s="ok"><td><span class="pill ok">✅ 已有</span></td><td><b>安全读通道</b></td><td>鉴权读 API</td><td><code>POST /secure/object-sets/load</code> 强制走 PEP 决策管线，secure-by-default。</td></tr>
+  </table>
+
+  <h3>D. 动作与函数——怎么办事、怎么算（8 项）</h3>
+  <table>
+    <tr><th style="width:8%">状态</th><th style="width:20%">能力</th><th style="width:32%">Palantir 怎么做</th><th>本体现在怎样</th></tr>
+    <tr data-s="ok"><td><span class="pill ok">✅ 已有</span></td><td><b>动作类型</b></td><td>参数化写回 + 校验 + 治理</td><td>参数必填校验 → FEEL 提交校验（fail-closed）→ 5 种编辑原子 → <b>单事务全成全败</b>；支持 dry-run 试算。<span class="ev">action.rs、action_exec.rs</span></td></tr>
+    <tr data-s="ok"><td><span class="pill ok">✅ 已有</span></td><td><b>动作审计</b></td><td>action history</td><td><code>oe_action_log</code> 记参数 / 编辑明细 / 执行人，failed 与 dryRun 都留痕。<span class="ev"><code>GET /action-logs</code></span></td></tr>
+    <tr data-s="ok"><td><span class="pill ok">✅ 已有</span></td><td><b>副作用编排</b></td><td>动作触发自动化 / 通知</td><td>事务性 Outbox（SKIP LOCKED 领取）+ 6 类副作用：webhook（白名单 SSRF 护栏）/ 通知 / SSE 事件 / 调函数 / 发起审批流 / 算报表；<code>ONTO_OUTBOUND</code> 总闸。<span class="ev">outbound.rs</span></td></tr>
+    <tr data-s="ok"><td><span class="pill ok">✅ 已有</span></td><td><b>函数引擎</b></td><td>函数供动作 / 应用复用</td><td>FEEL（自研 tokenizer + Pratt 解析器）+ Rhai（沙箱限额）+ nativeRust 注册表；求值支持 args / objects / objectSets 注入。<span class="ev">function.rs、rhai_engine.rs</span></td></tr>
+    <tr data-s="part"><td><span class="pill part">🟡 部分</span></td><td><b>函数工程化</b></td><td>函数仓库 + CI + 版本管理</td><td>停留在内联表达式级；wasm 运行时声明了没实装（直接报 Unsupported），nativeRust 仅 1 个内置函数。<span class="ev">function_runtime.rs:17</span></td></tr>
+    <tr data-s="part"><td><span class="pill part">🟡 部分</span></td><td><b>动作审批流</b></td><td>动作提交可走审批</td><td>startBusinessProcess 桥接 flowengine 审批流；但动作本身没有「待审批」状态机。</td></tr>
+    <tr data-s="ok"><td><span class="pill ok">✅ 已有</span></td><td><b>派生属性 / 校验场景</b></td><td>derived properties、validation functions</td><td>函数分五类：query / derivedProperty / validation / actionLogic / aggregation，分派齐。<span class="ev">FunctionDef.kind</span></td></tr>
+    <tr data-s="part"><td><span class="pill part">🟡 部分</span></td><td><b>决策逻辑建模</b></td><td>AIP Logic / 函数编排业务决策，直接吃本体</td><td>决策逻辑独立在规则引擎（决策表 / 决策图 JDM / 仿真 / 审计 / gap-overlap 分析），能力不缺，但<b>与本体没有打通</b>（两服务无端点互调）。</td></tr>
+  </table>
+
+  <h3>E. 应用与可视化——业务怎么用（9 项）</h3>
+  <table>
+    <tr><th style="width:8%">状态</th><th style="width:20%">能力</th><th style="width:32%">Palantir 怎么做</th><th>本体现在怎样</th></tr>
+    <tr data-s="ok"><td><span class="pill ok">✅ 已有</span></td><td><b>本体设计器（Graph）</b></td><td>Graph 图应用可视化编排本体</td><td>cmx-ontology-graph：富属性卡片、鸦爪基数、A* 正交避障布线、手动布线、分域折叠、undo 50 步、缩放 fitView；四区设计工作台。<span class="ev">portal.onto.designer</span></td></tr>
+    <tr data-s="ok"><td><span class="pill ok">✅ 已有</span></td><td><b>对象浏览器（Explorer）</b></td><td>Object Explorer 逛实例数据</td><td>分组树 / 对象集构造器 / 分页列表 / SearchAround 关系钻取。<span class="ev">portal.onto.explorer</span></td></tr>
+    <tr data-s="part"><td><span class="pill part">🟡 部分</span></td><td><b>对象 360 + 动作（Workshop）</b></td><td>Workshop 拖拽搭业务应用</td><td>搜索 / 360 卡 / 关系区 / 动作中心（dry-run + 执行）已可用；但<b>没有</b> widget 拖拽搭应用的搭建器。<span class="ev">portal.onto.workshop</span></td></tr>
+    <tr data-s="part"><td><span class="pill part">🟡 部分</span></td><td><b>自定义对象视图</b></td><td>Object View 自定义布局</td><td>om_view 场景视图（auto / manual 两态）+ 成员级装载（工作室 P1 本周刚落）；布局形态还单一。</td></tr>
+    <tr data-s="miss"><td><span class="pill miss">❌ 欠缺</span></td><td><b>地图应用（Map）</b></td><td>geo 对象落图</td><td>无</td></tr>
+    <tr data-s="miss"><td><span class="pill miss">❌ 欠缺</span></td><td><b>时序可视化</b></td><td>时序图表</td><td>无</td></tr>
+    <tr data-s="miss"><td><span class="pill miss">❌ 欠缺</span></td><td><b>媒体画廊</b></td><td>Media 展示</td><td>无</td></tr>
+    <tr data-s="miss"><td><span class="pill miss">❌ 欠缺</span></td><td><b>全局搜索入口</b></td><td>跨类型搜对象</td><td>无</td></tr>
+    <tr data-s="part"><td><span class="pill part">🟡 部分</span></td><td><b>海量规模画布</b></td><td>大规模本体流畅浏览</td><td>P4 LOD 虚拟化 + 空间索引 + 懒加载已在 cmx-ontology-canvas 实现，但<b>组件未交付、没有任何页面在用</b>。</td></tr>
+  </table>
+
+  <h3>F. 安全与治理——谁能看、谁能动（11 项）</h3>
+  <table>
+    <tr><th style="width:8%">状态</th><th style="width:20%">能力</th><th style="width:32%">Palantir 怎么做</th><th>本体现在怎样</th></tr>
+    <tr data-s="ok"><td><span class="pill ok">✅ 已有</span></td><td><b>行级过滤</b></td><td>ABAC / 标记下探到行</td><td>allow 策略 row_filter 编译残差折入对象集；受控类型 default-deny。机制已落地。<span class="ev">pep.rs、authz.rs</span></td></tr>
+    <tr data-s="ok"><td><span class="pill ok">✅ 已有</span></td><td><b>列级脱敏</b></td><td>restricted properties</td><td>deny_markings 命中列直接移除（复用 cmx-dataauth-core 脱敏）。<span class="ev">pep.rs:36</span></td></tr>
+    <tr data-s="ok"><td><span class="pill ok">✅ 已有</span></td><td><b>动作级权限</b></td><td>动作可见性 / 执行权限</td><td>deny_actions 403 硬门。<span class="ev">action_handlers.rs:68</span></td></tr>
+    <tr data-s="part"><td><span class="pill part">🟡 部分</span></td><td><b>敏感标记体系</b></td><td>Markings 全域分级管理</td><td>属性 marking 字段 + deny_markings 消费有了；没有全域标记管理。</td></tr>
+    <tr data-s="miss"><td><span class="pill miss">❌ 欠缺</span></td><td><b>主体身份可信（S1）</b></td><td>身份全程不可自报</td><td><b>P0 安全债</b>：subjects 可自报、角色用租户名占位，权限管线可以被「自报身份」绕过。</td></tr>
+    <tr data-s="miss"><td><span class="pill miss">❌ 欠缺</span></td><td><b>数据源 SQL 治理（S2）</b></td><td>管道定义受治理</td><td><b>P0 安全债</b>：funnel 的 sourceQuery 是任意 SQL 且有字符串拼接，等于留了后门。<span class="ev">funnel_store.rs:101,151</span></td></tr>
+    <tr data-s="ok"><td><span class="pill ok">✅ 已有</span></td><td><b>维护白名单</b></td><td>变更权限管控</td><td>om_maintainer 守卫草稿 / 发布 / 视图写端点 + <code>GET /me/roles</code>（注意：空表 = 不设防）。</td></tr>
+    <tr data-s="miss"><td><span class="pill miss">❌ 欠缺</span></td><td><b>对象编辑历史</b></td><td>对象历史逐行可溯</td><td>只有动作级审计，没有逐行属性级历史（谁在什么时候把价格从 5 改成 6，查不到）。</td></tr>
+    <tr data-s="ok"><td><span class="pill ok">✅ 已有</span></td><td><b>版本快照 / 对比 / 回滚</b></td><td>版本管理</td><td>om_version 不可变快照（xxh64 指纹）+ 元素级 diff + 回滚过评审门。<span class="ev">P2 本周刚上</span></td></tr>
+    <tr data-s="miss"><td><span class="pill miss">❌ 欠缺</span></td><td><b>多分支协作</b></td><td>branching / 提案合并</td><td>单草稿区（om_draft 恒 id=1），两人同时改会互相踩。</td></tr>
+    <tr data-s="ok"><td><span class="pill ok">✅ 已有</span></td><td><b>多租户隔离</b></td><td>组织级隔离</td><td>db-per-tenant 懒注册建表；JWT 复用平台统一鉴权。</td></tr>
+  </table>
+
+  <h3>G. 平台设施——工程底座（8 项）</h3>
+  <table>
+    <tr><th style="width:8%">状态</th><th style="width:20%">能力</th><th style="width:32%">Palantir 怎么做</th><th>本体现在怎样</th></tr>
+    <tr data-s="part"><td><span class="pill part">🟡 部分</span></td><td><b>变更事件流</b></td><td>subscriptions 持久订阅</td><td>SSE <code>/events</code>（按租户过滤、鉴权内）；但进程内广播，掉线丢事件、多副本间不互通。</td></tr>
+    <tr data-s="miss"><td><span class="pill miss">❌ 欠缺</span></td><td><b>消息队列 / MQ</b></td><td>事件总线</td><td>无 NATS / Kafka 接入</td></tr>
+    <tr data-s="miss"><td><span class="pill miss">❌ 欠缺</span></td><td><b>异步任务中心</b></td><td>长任务托管与查询</td><td>无（T5）：大同步 / 批量操作都卡在请求里</td></tr>
+    <tr data-s="part"><td><span class="pill part">🟡 部分</span></td><td><b>SDK 代码生成</b></td><td>OSDK：TS / Python / Java</td><td><code>GET /osdk/typescript</code> 已能生成 TS SDK；单语言。</td></tr>
+    <tr data-s="ok"><td><span class="pill ok">✅ 已有</span></td><td><b>API 自文档</b></td><td>—</td><td><code>/openapi.json</code> + Swagger UI <code>/docs</code>，免认证自取。</td></tr>
+    <tr data-s="miss"><td><span class="pill miss">❌ 欠缺</span></td><td><b>AI 助手 / Agent</b></td><td>AIP：本体感知问答、智能体直接调动作 / 函数</td><td>无；MCP 工具面未建（规划随 cmx-agent P3 阶段）。</td></tr>
+    <tr data-s="part"><td><span class="pill part">🟡 部分</span></td><td><b>模板与市场</b></td><td>Marketplace 跨组织本体模板</td><td>内置动作模板 <code>GET /action-templates</code>；无跨域模板分发。</td></tr>
+    <tr data-s="ok"><td><span class="pill ok">✅ 已有</span></td><td><b>建模自助台</b></td><td>Ontology Manager</td><td>内嵌控制台（服务根路径）+ 四区设计工作台 + 草稿 / 发布中心。</td></tr>
+  </table>
+
+  <h3>关于决策图（cmx-decision-graph）的特别说明</h3>
+  <div class="box">
+    <p>决策图不属于本体平台，是<b>规则引擎（cmx-rulesengine）</b>的前端组件，但它在对标里有一席之地：
+    <b>Palantir 没有独立的「决策图 / 决策表」产品</b>——业务决策逻辑在 Foundry 里就是 Functions + AIP Logic。
+    本地把决策逻辑独立成规则引擎（决策表 / 决策图 JDM DAG / 仿真台 / 审计中心 / gap-overlap 完整性分析），
+    是一套<b>差异化设计</b>，对应能力并不缺；缺的是与本体平台的打通（见矩阵 D-8）。</p>
+    <p><b>组件本身的现状</b>：5 类节点（input / output / 决策表 / 表达式 / 子决策）、Kahn 拓扑防环、只读预览模式都已可用，
+    已被决策图设计器（编辑态）和决策集工作台（只读预览）两个页面消费。
+    <b>短板</b>：无缩放平移 / 无 undo / 画布内删不了边（无 Delete 键）/ 无导出；注释里写了 fitView 但没实现；
+    仓库构建依赖兄弟仓工具链；vendor 产物落后于 dist（平台在跑旧版组件）。<span class="ev">证据：src/element/cmx-decision-graph.ts、graph-designer.js</span></p>
+  </div>
+
+  <h2 id="s3">③ 已经有了：值得说出口的八件事</h2>
+  <div class="card"><h4>1. 六类元模型一张网，60+ HTTP 端点</h4>
+    <p>对象类型 / 关系类型 / 接口 / 共享属性 / 动作类型 / 函数全部落地，路由表集中在 <code>onto_routes()</code>，
+    另有 OpenAPI + Swagger 自文档。<span class="ev">cmx-onto-app/src/lib.rs:63-237</span></p></div>
+  <div class="card"><h4>2. 四根台柱与 Foundry 同构</h4>
+    <p>① 六类元模型 ② 对象集代数编译成一条 SQL（安全护栏：标识符白名单 + 全参数绑定）
+    ③ 动作单事务 + 审计 + Outbox 副作用 ④ 版本快照 + 草稿双轨 + diff / 回滚。<b>这四样是本体平台的地基，我们和 Palantir 是同一种造法。</b></p></div>
+  <div class="card"><h4>3. 安全三道闸已有雏形</h4>
+    <p>读侧行级残差过滤（default-deny）、列级脱敏（借 cmx-dataauth-core）、写侧动作 403 硬门，
+    外加 <code>/secure/object-sets/load</code> 安全读通道和维护白名单。<span class="ev">pep.rs；S1 身份问题另记欠缺清单</span></p></div>
+  <div class="card"><h4>4. 数据进来有两条路，还带隔离区</h4>
+    <p>漏斗 Funnel 全量幂等同步（违规行进 <code>oo_quarantine</code>，不脏库）+ DOC / DCT 导入（cmx_origin 回指 MDM），
+    管道三段状态可查。</p></div>
+  <div class="card"><h4>5. 函数双引擎 + 五种场景分派</h4>
+    <p>FEEL（自研解析器，动作校验 fail-closed）+ Rhai（沙箱限额：运算步数 / 递归深度 / 容器大小），
+    函数按 query / derivedProperty / validation / actionLogic / aggregation 五类分派，求值时可注入对象和对象集。</p></div>
+  <div class="card"><h4>6. 十个业务页面已经能转起来</h4>
+    <p>本体侧四页：设计工作台（四区）/ 对象浏览器 / 对象 360 + 动作中心 / 共享地基；
+    规则侧七页：决策图设计器 / 决策集工作台 / 决策表设计器 / 仿真台 / 决策应用 / 审计中心等。
+    <span class="ev">assets/onto/web/ui-native、assets/rules/web/ui-native</span></p></div>
+  <div class="card"><h4>7. 画布组件是工业级水准</h4>
+    <p>cmx-ontology-graph：零依赖 Web Component、A* 正交避障布线、手动布线持久化、分域折叠、
+    undo 50 步、LOD 虚拟化（组件已实现待交付）。9 个测试文件 + demo 内置 49 条交互自检。</p></div>
+  <div class="card"><h4>8. 质量底盘</h4>
+    <p>22 个 e2e 脚本覆盖 O1~O7 / P1 / P2 全链路（含 <code>o4m3_flow_integration.sh</code> 动作接流程、<code>o6_authz_hardgate.sh</code> 权限硬门、
+    <code>p2_osdk.sh</code> SDK 生成）；单测 351 项全过（2026-08-31 口径）。</p></div>
+
+  <h2 id="s4">④ 还欠缺：按优先级的补课清单</h2>
+
+  <h3>P0 · 安全止血（能不能上生产的分水岭）</h3>
+  <div class="card p0"><h4>S1 主体身份可自报</h4>
+    <p><b>大白话</b>：门禁系统读的是访客自己填的胸卡——请求里的 subjects 谁都能报，角色还是租户名占位，
+    再严的策略也形同虚设。<b>对标</b>：Foundry 身份全程不可自报。<b>怎么补</b>：方案已有（主体裁定矩阵：一律忽略 body subjects +
+    HTTP 调 dataauth /decide 拿残差 + 读路径 secure-by-default + fail-closed，<code>[authz] mode=off|local|dataauth</code> 三态开关），约 8-10 人日，<b>未实施</b>。</p></div>
+  <div class="card p0"><h4>S2 Funnel 源 SQL 不设防</h4>
+    <p><b>大白话</b>：源映射里的 sourceQuery 是任意 SQL 且走字符串拼接，能碰到库的人等于拿到后门。
+    <b>对标</b>：Foundry 管道定义受治理。<b>怎么补</b>：sourceQuery 白名单化（只读 + 表级授权 + 参数化）。</p></div>
+
+  <h3>P1 · 性能与调度（决定能不能扛大流量）</h3>
+  <div class="card p1"><h4>索引与调度三件套</h4>
+    <ul>
+      <li><b>isIndexed 物理索引消费</b>（Q1）：JSONB 无字段索引，大表过滤全表扫，Palantir 常查属性是自动建索引的。</li>
+      <li><b>调度器</b>（T1）：同步、outbox 派发全靠人点；Foundry 有 Automate。最简形态 = 内置 cron 或复用外部调度跑 <code>/funnel/sync</code> 与 <code>/action-outbox/dispatch</code>。</li>
+      <li><b>增量水位</b>（T4）：记录上次同步位置，只推变化，别每次全量。</li>
+    </ul></div>
+  <div class="card p1"><h4>正确性三枚小债</h4>
+    <ul>
+      <li>发布并发<b>撞版本号</b>（Q3）；</li>
+      <li>删对象<b>清边按 pk 全局匹配</b>可能误删同名 pk（Q2）；</li>
+      <li>FEEL 数值走 f64，金额类计算有精度隐患（Q4）。</li>
+    </ul></div>
+
+  <h3>P2 · 平台能力补课（决定「像不像一个平台」）</h3>
+  <div class="card p2"><h4>可观测与检索</h4>
+    <ul>
+      <li><b>对象编辑历史</b>：逐行属性级「谁在何时改成什么」，Foundry 对象历史是标配；本地只有动作级审计。</li>
+      <li><b>全文搜索</b>：pg_trgm + 全局搜索端点 + 浏览器搜索框。</li>
+      <li><b>异步任务中心</b>（T5）：大同步 / 批量操作别卡在 HTTP 请求里。</li>
+      <li><b>SSE 持久化 / MQ</b>：事件掉线不丢、多副本互通（NATS 或共享表兜底）。</li>
+    </ul></div>
+  <div class="card p2"><h4>建模与执行补全</h4>
+    <ul>
+      <li><b>关系 backing 补全</b>：joinTable / intermediary 实装、foreignKey 写侧落地（现在写侧都兜底边表）。</li>
+      <li><b>wasm 函数运行时</b>：Extism 插件接入，函数走出表达式级。</li>
+      <li><b>聚合扩展</b>：avg / min / max / sum，凑齐 Foundry 常用面。</li>
+      <li><b>多分支协作</b>：草稿区从单区到多人分支 + 提案合并（对标 branching）。</li>
+      <li><b>OSDK 多语言</b>：Python / Java 客户端生成。</li>
+      <li><b>地图 / 时序 / 媒体三应用</b>：视业务场景按需上，不建议一口气补齐。</li>
+    </ul></div>
+
+  <h3>P3 · 生态（决定「能不能长出应用生态」）</h3>
+  <div class="card p3"><h4>AI 与闭环</h4>
+    <ul>
+      <li><b>MCP 工具面</b>：把本体端点包成 MCP 工具，让 cmx-agent 能查对象、执行动作——这是本地的「AIP 时刻」，规划随 cmx-agent。</li>
+      <li><b>本体感知 AI 助手</b>：基于对象集的自然语言问答。</li>
+      <li><b>流程审批结果回写本体</b>（T3）/ <b>本体 → MDM 回写</b>（T7）：打通双向闭环。</li>
+      <li><b>模板市场</b>：动作模板升级为跨域本体模板分发。</li>
+    </ul></div>
+
+  <h3>横切 · 前端工程债（本周盘点新发现）</h3>
+  <div class="card pdebt"><h4>三个图组件相关的问题</h4>
+    <ul>
+      <li><b>vendor 落后于 dist（两仓都有）</b>：cmx-ontology-graph 与 cmx-decision-graph 的运行时 vendor 产物 md5 与 dist 不一致——改了源码但没重跑 sync，<b>平台现在跑的是旧组件</b>。这是纪律问题，建议把 sync 挂进 build 流程。</li>
+      <li><b>cmx-ontology-canvas 未交付</b>：LOD 虚拟化大画布已实现，但没进 assets、没有任何页面引用，本体工作室 P1 的一半能力悬在半空。</li>
+      <li><b>decision-graph 交互短板</b>：无缩放平移 / undo / Delete 键 / 导出；fitView 只有注释没有实现。</li>
+    </ul></div>
+
+  <h2 id="s5">⑤ 明确不跟的（有意不做，别当欠账）</h2>
+  <table>
+    <tr><th style="width:26%">不做的事</th><th>为什么不做</th></tr>
+    <tr><td><span class="pill no">⛔ 不跟</span> 换图数据库</td><td>Foundry 本体底层同样不是图库（对象存储建在数据湖上）。PG 三组表 + JSONB 同构且运维简单，强行换图库是把简单问题复杂化。</td></tr>
+    <tr><td><span class="pill no">⛔ 不跟</span> RDF / OWL / SPARQL 标准兼容</td><td>Foundry 本体也是私有语义层，不走 W3C 语义网标准。兼容收益低、迁移成本高，生态上隔离。</td></tr>
+    <tr><td><span class="pill no">⛔ 不跟</span> 联邦查询</td><td>用「物化拷贝 + 同步」换「查询时跨源联表」的简单可靠；Foundry 主流打法同样是管道物化而非联邦。</td></tr>
+    <tr><td><span class="pill no">⛔ 不跟</span> Azure Digital Twins 式 IoT 实时建模</td><td>设备遥测数字孪生是另一条产品线，不在企业本体场景内。</td></tr>
+  </table>
+
+  <h2 id="s6">⑥ 一页纸结论</h2>
+  <div class="box tldr">
+    <p><b>1. 骨架不用动。</b>四根台柱（元模型 / 对象集 / 动作 / 版本）与 Foundry 同构，60 个能力点里 26 个齐装、15 个有基础，
+    没有任何一处需要推倒重来。</p>
+    <p><b>2. 钱先花在刀刃上。</b>P0 两枚安全债（S1 身份自报、S2 源 SQL 后门）是「能不能上生产」的分水岭，S1 方案已备好未实施；
+    P1 的索引 + 调度 + 增量决定大流量下扛不扛得住。</p>
+    <p><b>3. 平台感靠 P2，生态靠 P3。</b>编辑历史 / 全文搜索 / 任务中心补上就有「平台感」；
+    MCP 工具面接上 cmx-agent，就是本地版的「AIP 时刻」——那是对标叙事里最值得押注的一步。</p>
+    <p><b>4. 两件本周就能做的小事</b>：① 把两个图组件的 vendor 同步纪律挂进 build（现在跑的是旧组件）；
+    ② 把已实现未交付的 cmx-ontology-canvas 接线进本体工作室。</p>
+  </div>
+
+  <div class="foot">
+    <p><b>口径与证据</b>：本地现状按 cmx-ontology main@567efe4（2026-09-11，与 origin/main 同步）代码实测；
+    22 个 e2e 脚本位于 <code>backend/cmx-ontology/test/e2e/</code>。Palantir 侧按公开文档与 2026-09-08 内部审查口径整理，
+    逐项以对方公开能力为准，不构成产品承诺。状态统计：✅ 已有 26 · 🟡 部分 15 · ❌ 欠缺 19 · ⛔ 不跟 4（共 60 能力点）。</p>
+    <p><b>相关文档</b>：
+    <a href="20260910_本体平台_全景介绍与近期改动.html">全景介绍与近期改动（09-10）</a> ·
+    <a href="20260907_本体平台_详细说明.html">详细说明（12 章）</a> ·
+    <a href="20260907_本体平台_通俗说明与待办清单.html">通俗说明与待办清单</a> ·
+    <a href="plans/20260908_cmx-ontology_本体设计器功能补全与交互样式优化方案.md">本体设计器补全方案</a> ·
+    <a href="../docs/20260828_cmx-ontology_Palantir式企业本体平台_Rust完整建设方案.md">原始建设方案（历史）</a></p>
+  </div>
+
+</div>
+<script>
+function fset(cls,btn){
+  document.body.className = cls ? 'f-'+cls : '';
+  document.querySelectorAll('.fbtn').forEach(function(b){b.classList.remove('on')});
+  btn.classList.add('on');
+}
+</script>
+</body>
+</html>
