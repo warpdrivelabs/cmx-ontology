@@ -446,6 +446,25 @@ pub async fn execute_action(
     pep_check(&targets, &api_name, &subjects, &log).await?;
     log.push(json!({ "stage": "pepCheck", "ok": true, "scopes": targets }));
 
+    // 非 Edge backing 的关系不落 ol_edge：动作的 addLink/removeLink 编辑 fail-fast（防静默假写）。
+    for e in &resolved.edits {
+        let link = match e {
+            ObjectEdit::AddLink { link, .. } | ObjectEdit::RemoveLink { link, .. } => link,
+            _ => continue,
+        };
+        let backing = store()
+            .get_link_type(&tenant, link)
+            .await
+            .map_err(|er| ActionErr::internal(format!("装载关系类型失败: {er}")))?
+            .map(|lt| lt.backing_parsed())
+            .unwrap_or(cmx_onto_model::LinkBacking::Edge);
+        if !matches!(backing, cmx_onto_model::LinkBacking::Edge) {
+            return Err(ActionErr::business(format!(
+                "关系 {link} 为 FK/连接表/中间对象背书：动作不可直接 addLink/removeLink，请维护对应物理布局数据"
+            )));
+        }
+    }
+
     // 编辑目标当前值（proposedChanges 的 from；dry-run 预读、execute 亦预读供前端展示）
     let before = load_edit_target_objects(&tenant, &resolved.edits).await;
     let proposed = build_proposed_changes(&resolved.edits, &before);

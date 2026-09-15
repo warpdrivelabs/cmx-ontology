@@ -279,43 +279,46 @@ pub enum LinkEnd {
     B,
 }
 
-/// 关系落存储方式（强类型；对标 Palantir Foundry link datasource backing 的 FK 模式）。
+/// 关系落存储方式（强类型；对标 Palantir Foundry link datasource backing 三模式）。
 ///
 /// `LinkTypeDef.backing` 原样落库、原样回读（前端 round-trip 不失真）；本枚举只是解析后的
-/// 引擎视图。**对外唯一口径 = 页面形状**（designer/速建气泡「属性映射」两端各选一个字段）：
+/// 引擎视图。**对外唯一口径 = 页面形状**，仅认三种顶层键（`fk` / `joinTable` / `intermediary`）：
 ///
-/// - `{"fk":{"sourceProperty":"buyerId","targetProperty":"empNo","side":"b"}}`
-///   —— `side` 端对象表 `props->>'sourceProperty'` 与对端 `props->>'targetProperty'` 相等即建链；
-///   `targetProperty` 缺省 = 对端主键（`oo_<type>.pk` 列，Palantir Key 语义）；`side` 缺省 = `"a"`（源端持键）。
-/// - 历史/工具直写的内部 tagged 口径 `{"kind":"foreignKey","property","side"}` 继续兼容；
-///   空/非法/无法识别 → `Edge` 兜底（向后兼容，见 [`LinkTypeDef::backing_parsed`]）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+/// - `{"fk":{"sourceProperty":"settleCurrencyId","side":"b","targetProperty"?:"code"}}`
+///   —— `side` 端对象表 `props->>'sourceProperty'` 存对端匹配值；`targetProperty` 缺省 =
+///   对端主键（`oo_<type>.pk` 列，Palantir Key 严格语义）；显式指定 = 与对端
+///   `props->>'targetProperty'` 属性对属性相等（受控扩展，喂"外键存 code 等自然键"场景；
+///   注意对象 pk 列与 props 的 id 属性不保证同值）。`side` 缺省按 cardinality 推导
+///   （oneToMany→b、manyToOne→a、oneToOne→a，推导只在本解析层做一次）。
+/// - `{"joinTable":{"table","leftColumn","rightColumn"}}`：连接表 backing（manyToMany）；
+///   `leftColumn`↔A 端主键、`rightColumn`↔B 端主键，两列类型须与 `oo_*.pk` 同型（text）。
+/// - `{"intermediary":{"objectType","leftProperty","rightProperty"}}`：中间对象类型 backing
+///   （manyToMany）；中间对象两属性各存两端对象主键。
+/// - 旧 tagged `{"kind":...}` 口径已废除：无法识别一律 `Edge` 兜底（保存路径留痕告警）。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum LinkBacking {
     /// 原生边表（默认）。
     #[default]
     Edge,
-    /// 外键 backing：`side` 端对象表的 `property` 属性与对端匹配——`target_property` 为 None/空时
-    /// 匹配对端 pk 列；非空时匹配对端 `props->>'target_property'`（SearchAround 按此编译 JOIN）。
+    /// 外键 backing：`side` 端 `property` 属性值 = 对端匹配值（target_property 缺省 = 对端
+    /// 主键 pk 列；非空 = 对端 `props->>'target_property'`，属性对属性匹配）。
     ForeignKey {
         property: String,
-        #[serde(default)]
         side: LinkEnd,
-        /// 对端匹配属性 apiName；None/空 = 对端主键 pk 列。
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// 对端匹配属性 apiName；None = 对端主键 pk 列（严格 Palantir 语义）。
         target_property: Option<String>,
     },
-    /// 连接表 backing（多对多；两列外键）——声明占位，编译暂回退 Edge。
+    /// 连接表 backing（多对多；两列外键，left↔A 端主键、right↔B 端主键）。
     JoinTable {
-        #[serde(default)] table: String,
-        #[serde(default)] left_column: String,
-        #[serde(default)] right_column: String,
+        table: String,
+        left_column: String,
+        right_column: String,
     },
-    /// 中间对象类型 backing——声明占位，编译暂回退 Edge。
+    /// 中间对象类型 backing（多对多；中间对象两属性各存两端主键）。
     Intermediary {
-        #[serde(default)] object_type: String,
-        #[serde(default)] left_property: String,
-        #[serde(default)] right_property: String,
+        object_type: String,
+        left_property: String,
+        right_property: String,
     },
 }
 
@@ -348,20 +351,23 @@ pub struct LinkTypeDef {
 }
 
 impl LinkTypeDef {
-    /// 解析 `backing`（裸 JSON）为强类型 [`LinkBacking`]；空/非法/无法识别 → `Edge` 兜底（向后兼容）。
+    /// 解析 `backing`（裸 JSON）为强类型 [`LinkBacking`]；空/非法/无法识别 → `Edge` 兜底。
     ///
-    /// 双认两种口径：页面形状 `{"fk":{...}}`（designer「属性映射」两端各选一字段，唯一对外口径）
-    /// 优先；内部 tagged `{"kind":...}`（历史/工具直写）兼容。
+    /// **唯一口径 = 页面形状**（`fk` / `joinTable` / `intermediary` 三种顶层键）；旧 tagged
+    /// `{"kind":...}` 已废除（落 Edge，保存路径留痕告警）。FK `side` 缺省时按 cardinality
+    /// 在此推导（oneToMany→B、manyToOne→A、oneToOne→A）——推导全工程仅此一处，编译与校验
+    /// 均消费本结果，显式传值与基数的一致性由 [`Self::validate`] 把关。
     pub fn backing_parsed(&self) -> LinkBacking {
         let v = &self.backing;
-        if v.is_null() {
-            return LinkBacking::Edge;
-        }
-        // 页面口径（designer 速建气泡「属性映射（落库 backing.fk）」两端各选一字段）。
         if let Some(fk) = v.get("fk") {
             let side = match fk.get("side").and_then(|x| x.as_str()) {
                 Some("b") | Some("B") => LinkEnd::B,
-                _ => LinkEnd::A,
+                Some("a") | Some("A") => LinkEnd::A,
+                // 缺省/非法值：按基数推导（manyToMany + FK 由 validate 拒绝，此处按 many 端推导）。
+                _ => match self.cardinality {
+                    LinkCardinality::ManyToOne | LinkCardinality::OneToOne => LinkEnd::A,
+                    _ => LinkEnd::B,
+                },
             };
             let tp = json_str(fk, "targetProperty");
             return LinkBacking::ForeignKey {
@@ -370,9 +376,19 @@ impl LinkTypeDef {
                 target_property: (!tp.is_empty()).then_some(tp),
             };
         }
-        // 内部 tagged 口径（{"kind":...}）。
-        if v.get("kind").is_some() {
-            return serde_json::from_value(v.clone()).unwrap_or(LinkBacking::Edge);
+        if let Some(jt) = v.get("joinTable") {
+            return LinkBacking::JoinTable {
+                table: json_str(jt, "table"),
+                left_column: json_str(jt, "leftColumn"),
+                right_column: json_str(jt, "rightColumn"),
+            };
+        }
+        if let Some(im) = v.get("intermediary") {
+            return LinkBacking::Intermediary {
+                object_type: json_str(im, "objectType"),
+                left_property: json_str(im, "leftProperty"),
+                right_property: json_str(im, "rightProperty"),
+            };
         }
         LinkBacking::Edge
     }
@@ -389,24 +405,110 @@ impl LinkTypeDef {
                 "关系类型两端对象类型（objectTypeA / objectTypeB）不能为空".into(),
             ));
         }
-        // backing 若指定，须能解析且约束合法：FK 的 sourceProperty 必填且为合法标识符，
-        // targetProperty 选填、给则同样须合法。
-        if let LinkBacking::ForeignKey { property, target_property, .. } = self.backing_parsed() {
-            if property.trim().is_empty() {
-                return Err(crate::Error::Definition(
-                    "ForeignKey backing 的 sourceProperty（外端外键属性名）不能为空".into(),
-                ));
-            }
-            if !is_valid_api_name(&property) {
-                return Err(crate::Error::Definition(format!(
-                    "ForeignKey backing 的 sourceProperty「{property}」非法（须字母/下划线开头，仅字母数字下划线）"
-                )));
-            }
-            if let Some(tp) = target_property {
-                if !is_valid_api_name(&tp) {
+        // backing 若指定，须能解析且约束合法（Palantir 编辑约束轻量版：key 恒映射对端主键）。
+        match self.backing_parsed() {
+            LinkBacking::Edge => {}
+            LinkBacking::ForeignKey { property, side, target_property } => {
+                // 白名单键：fk 仅允许 sourceProperty / side / targetProperty。
+                if let Some(keys) = self.backing.get("fk").and_then(|f| f.as_object()) {
+                    for key in keys.keys() {
+                        if key != "sourceProperty" && key != "side" && key != "targetProperty" {
+                            return Err(crate::Error::Definition(format!(
+                                "ForeignKey backing 不支持字段「{key}」（仅允许 sourceProperty / side / targetProperty）"
+                            )));
+                        }
+                    }
+                    if let Some(s) = keys.get("side").and_then(|x| x.as_str()) {
+                        if !matches!(s, "a" | "A" | "b" | "B") {
+                            return Err(crate::Error::Definition(format!(
+                                "ForeignKey backing 的 side「{s}」非法（仅 a / b）"
+                            )));
+                        }
+                    }
+                }
+                if property.trim().is_empty() {
+                    return Err(crate::Error::Definition(
+                        "ForeignKey backing 的 sourceProperty（持键端外键属性名）不能为空".into(),
+                    ));
+                }
+                if !is_valid_api_name(&property) {
                     return Err(crate::Error::Definition(format!(
-                        "ForeignKey backing 的 targetProperty「{tp}」非法（须字母/下划线开头，仅字母数字下划线）"
+                        "ForeignKey backing 的 sourceProperty「{property}」非法（须字母/下划线开头，仅字母数字下划线）"
                     )));
+                }
+                if let Some(tp) = &target_property {
+                    if !is_valid_api_name(tp) {
+                        return Err(crate::Error::Definition(format!(
+                            "ForeignKey backing 的 targetProperty「{tp}」非法（须字母/下划线开头，仅字母数字下划线）"
+                        )));
+                    }
+                }
+                // 显式 side 与基数的一致性（外键恒在 many 端；缺省 side 已在解析层按基数推导）。
+                let expect = match self.cardinality {
+                    LinkCardinality::OneToMany => Some(LinkEnd::B),
+                    LinkCardinality::ManyToOne => Some(LinkEnd::A),
+                    LinkCardinality::OneToOne => None,
+                    LinkCardinality::ManyToMany => {
+                        return Err(crate::Error::Definition(
+                            "ForeignKey backing 不支持 manyToMany（多对多请用连接表或中间对象 backing）".into(),
+                        ));
+                    }
+                };
+                if let Some(want) = expect {
+                    if want != side {
+                        let want_s = if want == LinkEnd::A { "a" } else { "b" };
+                        let got_s = if side == LinkEnd::A { "a" } else { "b" };
+                        return Err(crate::Error::Definition(format!(
+                            "ForeignKey backing 的 side「{got_s}」与 cardinality「{:?}」矛盾：外键须在 many 端「{want_s}」",
+                            self.cardinality
+                        )));
+                    }
+                }
+            }
+            LinkBacking::JoinTable { table, left_column, right_column } => {
+                if self.cardinality != LinkCardinality::ManyToMany {
+                    return Err(crate::Error::Definition(
+                        "JoinTable backing 仅用于 manyToMany 关系".into(),
+                    ));
+                }
+                for (label, val) in [
+                    ("table", table.as_str()),
+                    ("leftColumn", left_column.as_str()),
+                    ("rightColumn", right_column.as_str()),
+                ] {
+                    if val.trim().is_empty() {
+                        return Err(crate::Error::Definition(format!(
+                            "JoinTable backing 的 {label} 不能为空"
+                        )));
+                    }
+                    if !is_valid_api_name(val) {
+                        return Err(crate::Error::Definition(format!(
+                            "JoinTable backing 的 {label}「{val}」非法（须字母/下划线开头，仅字母数字下划线）"
+                        )));
+                    }
+                }
+            }
+            LinkBacking::Intermediary { object_type, left_property, right_property } => {
+                if self.cardinality != LinkCardinality::ManyToMany {
+                    return Err(crate::Error::Definition(
+                        "Intermediary backing 仅用于 manyToMany 关系".into(),
+                    ));
+                }
+                for (label, val) in [
+                    ("objectType", object_type.as_str()),
+                    ("leftProperty", left_property.as_str()),
+                    ("rightProperty", right_property.as_str()),
+                ] {
+                    if val.trim().is_empty() {
+                        return Err(crate::Error::Definition(format!(
+                            "Intermediary backing 的 {label} 不能为空"
+                        )));
+                    }
+                    if !is_valid_api_name(val) {
+                        return Err(crate::Error::Definition(format!(
+                            "Intermediary backing 的 {label}「{val}」非法（须字母/下划线开头，仅字母数字下划线）"
+                        )));
+                    }
                 }
             }
         }
@@ -632,6 +734,10 @@ pub struct LinkTypeMeta {
     /// B 端对象类型的 DAM（同上）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dam_b: Option<DamRef>,
+    /// 关系 backing 原始 JSON（fk/joinTable/intermediary 页面形状；空对象 = Edge 兜底）。
+    /// 清单必须带锚点：Inspector 关系编辑表单靠它回显当前锚点，缺失会被误判「未登记锚点」且保存时把锚点洗掉。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backing: Option<Value>,
 }
 
 /// 通用类型清单项（接口/共享属性/函数；动作用下方富化的 [`ActionTypeMeta`]）。

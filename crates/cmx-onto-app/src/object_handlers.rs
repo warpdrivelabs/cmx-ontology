@@ -10,7 +10,7 @@ use crate::tenant::current_tenant;
 use axum::extract::Path;
 use axum::Json;
 use cmx_onto_model::objectset::{Aggregation, LinkEdge, ObjectRecord, ObjectSet, Page};
-use cmx_onto_model::{LinkResolver, ObjectStore, OntologyStore};
+use cmx_onto_model::{LinkBacking, LinkResolver, LinkTypeDef, ObjectStore, OntologyStore};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -125,14 +125,26 @@ pub struct LinkReq {
     pub properties: Value,
 }
 
+/// 非 Edge backing 的关系不落 ol_edge（FK/连接表/中间对象均直查物理布局）：
+/// 边写入显式拒绝，杜绝「写入返回 200 成功、查询永不生效」的静默假写。
+fn ensure_edge_writable(link: &str, lt: &LinkTypeDef) -> Result<()> {
+    if !matches!(lt.backing_parsed(), LinkBacking::Edge) {
+        return Err(OntoError::business_error(format!(
+            "关系 {link} 为 FK/连接表/中间对象背书：请直接维护外键属性值/连接表/中间对象数据，不支持 /links 边写入"
+        )));
+    }
+    Ok(())
+}
+
 /// POST /links —— 建立一条关系边（校验关系类型已定义）。
 pub async fn put_link(Json(req): Json<LinkReq>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
-    store()
+    let lt = store()
         .get_link_type(&tenant, &req.link)
         .await
         .map_err(|e| OntoError::internal_error(format!("装载关系类型失败: {e}")))?
         .ok_or_else(|| OntoError::business_error(format!("关系类型 {} 未定义", req.link)))?;
+    ensure_edge_writable(&req.link, &lt)?;
     let edge = LinkEdge {
         link: req.link.clone(),
         a_pk: req.a_pk,
@@ -149,6 +161,12 @@ pub async fn put_link(Json(req): Json<LinkReq>) -> Result<Json<ApiResp<Value>>> 
 /// DELETE /links —— 删除一条关系边。body: {link,aPk,bPk}
 pub async fn delete_link(Json(req): Json<LinkReq>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
+    let lt = store()
+        .get_link_type(&tenant, &req.link)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("装载关系类型失败: {e}")))?
+        .ok_or_else(|| OntoError::business_error(format!("关系类型 {} 未定义", req.link)))?;
+    ensure_edge_writable(&req.link, &lt)?;
     let edge = LinkEdge {
         link: req.link.clone(),
         a_pk: req.a_pk,
@@ -224,28 +242,35 @@ pub async fn aggregate_object_set(Json(req): Json<AggregateReq>) -> Result<Json<
     Ok(Json(ApiResp::ok(out)))
 }
 
-/// GET /objects/{type}/{pk}/links/{link} —— 便捷 Search-Around（Forward）：取该对象经 link 的相关对象。
-/// 等价于 load(SearchAround(Static([pk]), link, Forward))；读侧硬门作用在解析出的终端类型上。
+/// GET /objects/{type}/{pk}/links/{link} —— 便捷 Search-Around：取该对象经 link 的相关对象。
+/// 方向自判：源对象类型在 A 端 → Forward（终端 B），在 B 端 → Reverse（终端 A）；
+/// 自关联（A==B）取 Forward；均不命中报 404。读侧硬门作用在解析出的终端类型上。
 pub async fn search_around(
     Path((object_type, pk, link)): Path<(String, String, String)>,
 ) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
+    let lr = link_resolver();
+    let (direction, terminal) = match lr
+        .ends(&tenant, &link)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("解析关系两端失败: {e}")))?
+    {
+        Some((a, b)) if a == object_type => (cmx_onto_model::objectset::LinkDirection::Forward, b),
+        Some((a, b)) if b == object_type => (cmx_onto_model::objectset::LinkDirection::Reverse, a),
+        _ => {
+            return Err(OntoError::not_found(format!(
+                "关系 {link} 不存在于对象类型 {object_type} 上"
+            )))
+        }
+    };
     let set = ObjectSet::SearchAround {
         source: Box::new(ObjectSet::Static {
             object_type: object_type.clone(),
             primary_keys: vec![pk.clone()],
         }),
         link: link.clone(),
-        direction: cmx_onto_model::objectset::LinkDirection::Forward,
+        direction,
     };
-    let lr = link_resolver();
-    // SearchAround 终端类型 = link 的 B 端（Forward）；解析出来喂给硬门做类型级策略匹配。
-    let terminal = lr
-        .ends(&tenant, &link)
-        .await
-        .map_err(|e| OntoError::internal_error(format!("解析关系两端失败: {e}")))?
-        .map(|(_, b)| b)
-        .unwrap_or_default();
     let subjects = crate::pep::subjects_from(&[]);
     let (secured_set, mask_plan) =
         crate::pep::enforce_read(&tenant, &subjects, &terminal, set).await?;

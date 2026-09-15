@@ -9,8 +9,8 @@ use crate::tenant::{current_display_user, current_tenant};
 use axum::extract::{Path, Query};
 use axum::Json;
 use cmx_onto_model::{
-    ActionTypeDef, FunctionDef, InterfaceDef, LinkTypeDef, ObjectTypeDef, OntologyStore,
-    SharedPropertyTypeDef, StoreError,
+    ActionTypeDef, FunctionDef, InterfaceDef, LinkBacking, LinkEnd, LinkTypeDef, ObjectTypeDef,
+    OntologyStore, SharedPropertyTypeDef, StoreError,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -178,11 +178,16 @@ pub async fn get_link_type(Path(api_name): Path<String>) -> Result<Json<ApiResp<
     Ok(Json(ApiResp::ok(json!(def))))
 }
 
-/// B2 留痕：backing.fk 外键映射（`{"fk":{"sourceProperty","targetProperty"}}`——与前端
-/// `LINK_BACKING_FK` 常量互指，唯一口径）缺属性名时记服务端日志，不拒绝、不新增响应通道。
+/// B2 留痕：backing.fk 外键映射（`{"fk":{"sourceProperty","side","targetProperty"?}}`——与前端
+/// `LINK_BACKING_FK` 常量互指，唯一口径）缺属性名时记服务端日志；直写旧 tagged
+/// `{"kind":...}` 口径同样留痕告警，静默变有痕。
 fn log_backing_fk_gaps(api_name: &str, backing: &Value) {
+    if backing.get("kind").is_some() {
+        tracing::warn!(link = %api_name, "backing 含已废除的 tagged {{\"kind\":...}} 口径（解析按 Edge 兜底），请改写为页面口径 {{\"fk\":{{...}}}}");
+        return;
+    }
     let Some(fk) = backing.get("fk") else { return };
-    for key in ["sourceProperty", "targetProperty"] {
+    for key in ["sourceProperty"] {
         let v = fk.get(key).and_then(|x| x.as_str()).map(str::trim).unwrap_or("");
         if v.is_empty() {
             tracing::warn!(link = %api_name, field = key, "backing.fk 缺 {key}（映射不完整，速建气泡/关系 Inspector 应补齐）");
@@ -195,11 +200,73 @@ pub async fn save_link_type(Json(def): Json<LinkTypeDef>) -> Result<Json<ApiResp
         .map_err(|e| OntoError::business_error(format!("关系类型非法: {e}")))?;
     log_backing_fk_gaps(&def.api_name, &def.backing);
     let tenant = current_tenant();
+    ensure_backing_references(&tenant, &def).await?;
     store()
         .upsert_link_type(&tenant, &def)
         .await
         .map_err(|e| OntoError::internal_error(format!("保存关系类型失败: {e}")))?;
     Ok(Json(ApiResp::ok(json!({ "apiName": def.api_name, "saved": true }))))
+}
+
+/// save 跨端校验（定义层 validate 拿不到属性注册表，这里 async 补齐）：
+/// 非 Edge backing 的两端对象类型须已注册；FK 的 sourceProperty 须存在于持键端
+/// 属性定义中；Intermediary 的中间对象类型须已注册。JoinTable 连接表本体由
+/// store 层 upsert_link_type 的索引维护把关（缺表明确报错）。
+async fn ensure_backing_references(tenant: &str, def: &LinkTypeDef) -> Result<()> {
+    if matches!(def.backing_parsed(), LinkBacking::Edge) {
+        return Ok(());
+    }
+    ensure_object_registered(tenant, &def.object_type_a, "A 端").await?;
+    ensure_object_registered(tenant, &def.object_type_b, "B 端").await?;
+    match def.backing_parsed() {
+        LinkBacking::ForeignKey { property, side, target_property } => {
+            let holder = if side == LinkEnd::A { &def.object_type_a } else { &def.object_type_b };
+            let other = if side == LinkEnd::A { &def.object_type_b } else { &def.object_type_a };
+            let meta = store()
+                .get_object_type(tenant, holder)
+                .await
+                .map_err(|e| OntoError::internal_error(format!("装载对象类型失败: {e}")))?
+                .ok_or_else(|| OntoError::business_error(format!("对象类型 {holder} 未注册")))?;
+            let known = meta.properties.iter().any(|p| p.api_name == property);
+            if !known {
+                return Err(OntoError::business_error(format!(
+                    "对象类型 {holder} 无属性「{property}」：ForeignKey 的 sourceProperty 必须是持键端已注册属性"
+                )));
+            }
+            if let Some(tp) = &target_property {
+                let other_meta = store()
+                    .get_object_type(tenant, other)
+                    .await
+                    .map_err(|e| OntoError::internal_error(format!("装载对象类型失败: {e}")))?
+                    .ok_or_else(|| OntoError::business_error(format!("对象类型 {other} 未注册")))?;
+                let tp_known = other_meta.properties.iter().any(|p| p.api_name == *tp);
+                if !tp_known {
+                    return Err(OntoError::business_error(format!(
+                        "对象类型 {other} 无属性「{tp}」：ForeignKey 的 targetProperty 必须是对端已注册属性"
+                    )));
+                }
+            }
+        }
+        LinkBacking::Intermediary { object_type, .. } => {
+            ensure_object_registered(tenant, &object_type, "中间对象").await?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+async fn ensure_object_registered(tenant: &str, api_name: &str, label: &str) -> Result<()> {
+    let known = store()
+        .get_object_type(tenant, api_name)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("装载对象类型失败: {e}")))?
+        .is_some();
+    if !known {
+        return Err(OntoError::business_error(format!(
+            "{label}对象类型 {api_name} 未注册，请先保存对象类型"
+        )));
+    }
+    Ok(())
 }
 
 pub async fn delete_link_type(Path(api_name): Path<String>) -> Result<Json<ApiResp<Value>>> {

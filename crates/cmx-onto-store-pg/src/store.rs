@@ -10,14 +10,17 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use cmx_core::model::cell::{DataValue, SqlTypeMarker};
 use cmx_core::model::data::dataset::{DataSet, Row, Schema};
+use crate::compile::{object_table, safe_ident};
+use crate::object_store::PgObjectStore;
 use cmx_database_pg::{
     execute_sql, execute_sql_with_params, get_default_pg_db_manager, query_sql_with_params,
     SqlParams,
 };
 use cmx_onto_model::{
-    ActionTypeDef, ActionTypeMeta, FunctionDef, InterfaceDef, LinkTypeDef, LinkTypeMeta,
-    ObjectTypeDef, ObjectTypeMeta, OntologyManifest, OntologyStore, OntologyVersionMeta,
-    PropertyTypeDef, SharedPropertyTypeDef, SimpleTypeMeta, StoreError, StoreResult, TypeStatus,
+    ActionTypeDef, ActionTypeMeta, FunctionDef, InterfaceDef, LinkBacking, LinkEnd, LinkTypeDef,
+    LinkTypeMeta, ObjectStore, ObjectTypeDef, ObjectTypeMeta, OntologyManifest, OntologyStore,
+    OntologyVersionMeta, PropertyTypeDef, SharedPropertyTypeDef, SimpleTypeMeta, StoreError,
+    StoreResult, TypeStatus,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -424,6 +427,8 @@ impl OntologyStore for PgOntologyStore {
 
     async fn upsert_link_type(&self, _tenant: &str, def: &LinkTypeDef) -> StoreResult<()> {
         let now = Utc::now();
+        // 索引维护前置：JoinTable 缺表等硬失败在落库前拦截（否则 upsert 已生效、接口却报错，出现「半写」）。
+        self.ensure_backing_indexes(def).await?;
         self.exec(
             "INSERT INTO om_link_type \
              (api_name, display_name, cardinality, object_type_a, object_type_b, role_a, role_b, \
@@ -478,10 +483,11 @@ impl OntologyStore for PgOntologyStore {
 
     async fn list_link_types(&self, _tenant: &str) -> StoreResult<Vec<LinkTypeMeta>> {
         // A3 清单富化：LEFT JOIN 两端对象类型的 DAM（跨域关系治理；对端被删 → None 跳过序列化）。
+        // backing 一并带出：Inspector 关系编辑表单回显锚点、保存合并都依赖清单行（缺省会误判 Edge 并洗掉锚点）。
         let ds = self
             .query(
                 "SELECT l.api_name, l.display_name, l.cardinality, l.object_type_a, l.object_type_b, \
-                 l.status, l.updated_at, da.dam AS dam_a, db.dam AS dam_b \
+                 l.status, l.updated_at, l.backing, da.dam AS dam_a, db.dam AS dam_b \
                  FROM om_link_type l \
                  LEFT JOIN om_object_type da ON da.api_name = l.object_type_a \
                  LEFT JOIN om_object_type db ON db.api_name = l.object_type_b \
@@ -503,6 +509,7 @@ impl OntologyStore for PgOntologyStore {
                 updated_at: get_opt_ts(row, s, "updated_at"),
                 dam_a: get_opt_json(row, s, "dam_a").and_then(|v| serde_json::from_value(v).ok()),
                 dam_b: get_opt_json(row, s, "dam_b").and_then(|v| serde_json::from_value(v).ok()),
+                backing: get_opt_json(row, s, "backing"),
             });
         }
         Ok(out)
@@ -1057,5 +1064,78 @@ pub(crate) fn get_opt_json(row: &Row, schema: &Schema, col: &str) -> Option<Valu
     match row.get_by_name(schema, col) {
         Some(DataValue::Json(s)) | Some(DataValue::String(s)) => serde_json::from_str(s).ok(),
         _ => None,
+    }
+}
+
+impl PgOntologyStore {
+        /// backing 索引自动维护：FK / 中间对象表先 ensure（新注册未录数建空表即可）再建 props
+    /// 表达式索引，失败仅告警不阻断 save；JoinTable 连接表须已预建，缺表在此明确报错。
+    /// 命名统一小写不加引号、超 63 字节截断；**只建不删**——同 (表,属性) 可被多条关系共享，
+    /// DROP 会误伤仍在用的关系，残留索引无害（确需清理手工 DROP）。
+    async fn ensure_backing_indexes(&self, def: &LinkTypeDef) -> StoreResult<()> {
+        // 索引名统一小写、截断到 PG 标识符 63 字节上限（防大小写折叠/截断两侧不一致静默空转）。
+        fn short_index_name(raw: &str) -> String {
+            let mut n: String = raw.chars().map(|c| c.to_ascii_lowercase()).collect();
+            n.truncate(63);
+            n
+        }
+        match def.backing_parsed() {
+            LinkBacking::Edge => Ok(()),
+            LinkBacking::JoinTable { table, left_column, right_column } => {
+                let tbl = safe_ident(&table)?;
+                let cols = [safe_ident(&left_column)?, safe_ident(&right_column)?];
+                for col in cols {
+                    let idx = short_index_name(&format!("idx_{tbl}_{col}"));
+                    execute_sql(
+                        &self.db_id,
+                        None,
+                        &format!("CREATE INDEX IF NOT EXISTS {idx} ON {tbl} ({col})"),
+                    )
+                    .await
+                    .map_err(|e| StoreError::Backend(format!(
+                        "连接表 {tbl} 不可用（请先按两端主键预建连接表，两列类型须为 text）: {e}"
+                    )))?;
+                }
+                Ok(())
+            }
+            LinkBacking::ForeignKey { property, side, target_property } => {
+                let ty = if side == LinkEnd::A { &def.object_type_a } else { &def.object_type_b };
+                self.ensure_tbl_then_index(&def.api_name, ty, &property).await?;
+                // 显式 targetProperty（属性对属性 JOIN）→ 对端表匹配属性同样建表达式索引。
+                if let Some(tp) = &target_property {
+                    let other = if side == LinkEnd::A { &def.object_type_b } else { &def.object_type_a };
+                    self.ensure_tbl_then_index(&def.api_name, other, tp).await?;
+                }
+                Ok(())
+            }
+            LinkBacking::Intermediary { object_type, left_property, right_property } => {
+                self.ensure_tbl_then_index(&def.api_name, &object_type, &left_property).await?;
+                self.ensure_tbl_then_index(&def.api_name, &object_type, &right_property).await
+            }
+        }
+    }
+
+    /// ensure 对象表后建 props 表达式索引；除 ensure 表本身失败（跳过索引、告警）外不阻断。
+    async fn ensure_tbl_then_index(&self, link: &str, object_type: &str, prop: &str) -> StoreResult<()> {
+        let (Ok(t), Ok(p)) = (object_table(object_type), safe_ident(prop)) else {
+            return Ok(());
+        };
+        if let Err(e) = PgObjectStore::new(self.db_id.clone())
+            .ensure_object_table("", object_type)
+            .await
+        {
+            tracing::warn!(link = %link, table = %t, "ensure 对象表失败（索引跳过）: {e}");
+            return Ok(());
+        }
+        let idx = {
+            let mut n: String = format!("idx_{t}_{p}").chars().map(|c| c.to_ascii_lowercase()).collect();
+            n.truncate(63);
+            n
+        };
+        let stmt = format!("CREATE INDEX IF NOT EXISTS {idx} ON {t} ((props ->> '{p}'))");
+        if let Err(e) = execute_sql(&self.db_id, None, &stmt).await {
+            tracing::warn!(link = %link, "索引 {idx} 建立失败: {e}");
+        }
+        Ok(())
     }
 }

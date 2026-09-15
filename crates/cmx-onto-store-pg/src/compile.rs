@@ -128,12 +128,38 @@ impl<'a> Compiler<'a> {
                     LinkDirection::Reverse => (ends.0.clone(), LinkEnd::B),
                 };
                 let sql = match self.backing_of(link) {
-                    // 外键 backing：走对象表 FK 属性 JOIN（不碰 ol_edge）。
+                    // 外键 backing：缺省走 pk 半连接；显式 targetProperty 走属性对属性 JOIN（不碰 ol_edge）。
                     LinkBacking::ForeignKey { property, side, target_property } => {
                         self.fk_search_around(&inner, ends, src_end, &property, side, target_property.as_deref())?
                     }
-                    // Edge / 暂未接的 JoinTable·Intermediary → 回退 ol_edge（保今日语义）。
-                    _ => {
+                    // 连接表 backing：两列外键各指两端主键（leftColumn↔A、rightColumn↔B）。
+                    LinkBacking::JoinTable { table, left_column, right_column } => {
+                        let tbl = safe_ident(&table)?;
+                        let (from_col, to_col) = match src_end {
+                            LinkEnd::A => (safe_ident(&left_column)?, safe_ident(&right_column)?),
+                            LinkEnd::B => (safe_ident(&right_column)?, safe_ident(&left_column)?),
+                        };
+                        format!(
+                            "SELECT DISTINCT j.{to_col} AS pk FROM {tbl} j \
+                             WHERE j.{from_col} IN ({inner})"
+                        )
+                    }
+                    // 中间对象类型 backing：中间对象两属性各存两端主键（left↔A、right↔B）。
+                    LinkBacking::Intermediary { object_type, left_property, right_property } => {
+                        let tbl = object_table(&object_type)?;
+                        let lp = safe_ident(&left_property)?;
+                        let rp = safe_ident(&right_property)?;
+                        let (from_p, to_p) = match src_end {
+                            LinkEnd::A => (lp, rp),
+                            LinkEnd::B => (rp, lp),
+                        };
+                        format!(
+                            "SELECT DISTINCT i.props ->> '{to_p}' AS pk FROM {tbl} i \
+                             WHERE i.props ->> '{from_p}' IN ({inner})"
+                        )
+                    }
+                    // 原生边表（缺省 / 显式 Edge）。
+                    LinkBacking::Edge => {
                         let link_lit = self.bind(params, DataValue::String(link.clone()));
                         let (from_col, to_col) = match direction {
                             LinkDirection::Forward => ("a_pk", "b_pk"),
@@ -153,13 +179,13 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// ForeignKey backing 的 SearchAround → 对象表 FK 属性 JOIN（不碰 ol_edge）。
+    /// ForeignKey backing 的 SearchAround → 对象表 JOIN/半连接（不碰 ol_edge）。
     ///
     /// `ends`=(A类型,B类型)；`src_end`=源所在端；`property`=外键属性名（页面口径 sourceProperty，
-    /// 落在 `side` 端表）；`target_property`=对端匹配属性（页面口径 targetProperty；None = 对端 pk 列，
-    /// Palantir Key 语义）。两种物理形态：
-    /// - **FK 属性在源端表**（`side == src_end`）：源表 `props->>'property'` 与对端匹配值/对端 pk 相等。
-    /// - **FK 属性在终端表**（`side != src_end`）：终端表 `props->>'property'` 指回源端匹配值/源端 pk。
+    /// 落在 `side` 端表）；`target_property`=对端匹配属性（页面口径 targetProperty；None = 对端
+    /// pk 列，Palantir Key 严格语义；非空 = 对端 props 属性，属性对属性 JOIN）。两种物理形态：
+    /// - **FK 属性在源端表**（`side == src_end`）：源表 `props->>'property'` 与对端匹配值/pk 相等。
+    /// - **FK 属性在终端表**（`side != src_end`）：终端表 `props->>'property'` 指回源端匹配值/pk。
     fn fk_search_around(
         &self,
         inner: &str,
@@ -418,7 +444,7 @@ mod tests {
         let mut b = HashMap::new();
         b.insert(
             "customerPlacesOrder".to_string(),
-            LinkBacking::ForeignKey { property: "customerId".into(), side: LinkEnd::B },
+            LinkBacking::ForeignKey { property: "customerId".into(), side: LinkEnd::B, target_property: None },
         );
         b
     }
@@ -484,7 +510,7 @@ mod tests {
         let mut bk = HashMap::new();
         bk.insert(
             "customerPlacesOrder".to_string(),
-            LinkBacking::ForeignKey { property: "x; DROP TABLE oo_Order".into(), side: LinkEnd::B },
+            LinkBacking::ForeignKey { property: "x; DROP TABLE oo_Order".into(), side: LinkEnd::B, target_property: None },
         );
         let mut c = Compiler::with_backing(&m, &bk);
         let set = ObjectSet::SearchAround {

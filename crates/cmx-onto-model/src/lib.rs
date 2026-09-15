@@ -162,7 +162,7 @@ mod tests {
         assert!(e.contains("两端"), "应报两端不能为空: {e}");
     }
 
-    // ───────── backing 强类型（#5） ─────────
+    // ───────── backing 单口径（fk / joinTable / intermediary；targetProperty 已废除） ─────────
 
     #[test]
     fn backing_parsed_defaults_to_edge() {
@@ -177,96 +177,87 @@ mod tests {
     }
 
     #[test]
-    fn backing_parsed_foreign_key() {
+    fn backing_tagged_kind_abolished() {
+        // 旧 tagged {"kind":...} 口径已废除：解析落 Edge，validate 不因 backing 报错。
         let lt: LinkTypeDef = serde_json::from_value(json!({
-            "apiName": "orderByCustomer",
-            "objectTypeA": "Customer",
-            "objectTypeB": "Order",
+            "apiName": "l", "objectTypeA": "A", "objectTypeB": "B",
             "backing": { "kind": "foreignKey", "property": "customerId", "side": "b" }
+        }))
+        .unwrap();
+        assert_eq!(lt.backing_parsed(), LinkBacking::Edge);
+        assert!(lt.validate().is_ok());
+    }
+
+    #[test]
+    fn backing_fk_page_shape_parsed() {
+        // 页面口径唯一合法形状：{"fk":{"sourceProperty","side"}} —— 外键值 = 对端主键。
+        let lt: LinkTypeDef = serde_json::from_value(json!({
+            "apiName": "buyerOf", "objectTypeA": "Employee", "objectTypeB": "Supplier",
+            "cardinality": "oneToMany",
+            "backing": { "fk": { "sourceProperty": "buyerId", "side": "b" } }
         }))
         .unwrap();
         assert_eq!(
             lt.backing_parsed(),
-            LinkBacking::ForeignKey { property: "customerId".into(), side: LinkEnd::B, target_property: None }
+            LinkBacking::ForeignKey { property: "buyerId".into(), side: LinkEnd::B, target_property: None }
         );
         assert!(lt.validate().is_ok());
     }
 
     #[test]
-    fn backing_foreign_key_side_defaults_to_a() {
-        // side 缺省 → A。
-        let lt: LinkTypeDef = serde_json::from_value(json!({
+    fn backing_fk_side_derived_from_cardinality() {
+        // side 缺省 → 按 cardinality 推导（oneToMany→B / manyToOne→A；推导只在解析层做一次）。
+        let one_to_many: LinkTypeDef = serde_json::from_value(json!({
             "apiName": "l", "objectTypeA": "A", "objectTypeB": "B",
-            "backing": { "kind": "foreignKey", "property": "ref" }
+            "backing": { "fk": { "sourceProperty": "ref" } }
+        }))
+        .unwrap();
+        assert_eq!(one_to_many.cardinality, LinkCardinality::OneToMany);
+        assert_eq!(
+            one_to_many.backing_parsed(),
+            LinkBacking::ForeignKey { property: "ref".into(), side: LinkEnd::B, target_property: None }
+        );
+        assert!(one_to_many.validate().is_ok());
+
+        let many_to_one: LinkTypeDef = serde_json::from_value(json!({
+            "apiName": "l", "objectTypeA": "A", "objectTypeB": "B", "cardinality": "manyToOne",
+            "backing": { "fk": { "sourceProperty": "ref" } }
         }))
         .unwrap();
         assert_eq!(
-            lt.backing_parsed(),
+            many_to_one.backing_parsed(),
             LinkBacking::ForeignKey { property: "ref".into(), side: LinkEnd::A, target_property: None }
         );
     }
 
     #[test]
-    fn backing_foreign_key_empty_property_rejected() {
+    fn backing_fk_side_conflicting_cardinality_rejected() {
+        // 显式 side 与基数矛盾（oneToMany 但 side=a）→ 拒绝。
         let lt: LinkTypeDef = serde_json::from_value(json!({
             "apiName": "l", "objectTypeA": "A", "objectTypeB": "B",
-            "backing": { "kind": "foreignKey", "property": "" }
+            "backing": { "fk": { "sourceProperty": "ref", "side": "a" } }
         }))
         .unwrap();
         let e = lt.validate().unwrap_err().to_string();
-        assert!(e.contains("sourceProperty"), "应报 FK sourceProperty 不能为空: {e}");
+        assert!(e.contains("side"), "应报 side 与 cardinality 矛盾: {e}");
     }
 
     #[test]
-    fn backing_foreign_key_bad_property_rejected() {
+    fn backing_fk_side_bad_value_rejected() {
         let lt: LinkTypeDef = serde_json::from_value(json!({
             "apiName": "l", "objectTypeA": "A", "objectTypeB": "B",
-            "backing": { "kind": "foreignKey", "property": "2bad; DROP" }
+            "backing": { "fk": { "sourceProperty": "ref", "side": "x" } }
         }))
         .unwrap();
-        assert!(lt.validate().is_err());
+        let e = lt.validate().unwrap_err().to_string();
+        assert!(e.contains("side"), "应报 side 非法: {e}");
     }
 
     #[test]
-    fn backing_fk_page_shape_parsed() {
-        // 页面口径（designer「属性映射」两端各选一字段）：{"fk":{...}} —— 唯一对外口径。
-        let lt: LinkTypeDef = serde_json::from_value(json!({
-            "apiName": "buyerOf", "objectTypeA": "Employee", "objectTypeB": "Supplier",
-            "backing": { "fk": { "sourceProperty": "buyerId", "targetProperty": "empNo", "side": "b" } }
-        }))
-        .unwrap();
-        assert_eq!(
-            lt.backing_parsed(),
-            LinkBacking::ForeignKey {
-                property: "buyerId".into(),
-                side: LinkEnd::B,
-                target_property: Some("empNo".into()),
-            }
-        );
-        assert!(lt.validate().is_ok());
-    }
-
-    #[test]
-    fn backing_fk_page_shape_minimal() {
-        // 页面口径最小形：side/targetProperty 缺省（A 端持键 + 对端主键，Palantir Key 语义）。
-        let lt: LinkTypeDef = serde_json::from_value(json!({
-            "apiName": "settleCurrency", "objectTypeA": "Supplier", "objectTypeB": "Currency",
-            "backing": { "fk": { "sourceProperty": "settleCurrencyId" } }
-        }))
-        .unwrap();
-        assert_eq!(
-            lt.backing_parsed(),
-            LinkBacking::ForeignKey { property: "settleCurrencyId".into(), side: LinkEnd::A, target_property: None }
-        );
-        assert!(lt.validate().is_ok());
-    }
-
-    #[test]
-    fn backing_fk_page_shape_empty_source_rejected() {
-        // 页面口径缺 sourceProperty（designer 允许留空保存，此处校验拒绝）。
+    fn backing_fk_empty_property_rejected() {
         let lt: LinkTypeDef = serde_json::from_value(json!({
             "apiName": "l", "objectTypeA": "A", "objectTypeB": "B",
-            "backing": { "fk": { "targetProperty": "id" } }
+            "backing": { "fk": {} }
         }))
         .unwrap();
         let e = lt.validate().unwrap_err().to_string();
@@ -274,18 +265,132 @@ mod tests {
     }
 
     #[test]
-    fn backing_fk_page_shape_bad_target_rejected() {
+    fn backing_fk_bad_property_rejected() {
         let lt: LinkTypeDef = serde_json::from_value(json!({
             "apiName": "l", "objectTypeA": "A", "objectTypeB": "B",
-            "backing": { "fk": { "sourceProperty": "fk", "targetProperty": "2bad" } }
+            "backing": { "fk": { "sourceProperty": "2bad; DROP" } }
         }))
         .unwrap();
         assert!(lt.validate().is_err());
     }
 
     #[test]
+    fn backing_fk_target_property_explicit() {
+        // targetProperty 受控扩展：缺省 = 对端主键（不落字段）；显式 = 对端属性对属性匹配。
+        let with_tp: LinkTypeDef = serde_json::from_value(json!({
+            "apiName": "l", "objectTypeA": "A", "objectTypeB": "B",
+            "backing": { "fk": { "sourceProperty": "buyerId", "targetProperty": "code", "side": "b" } }
+        }))
+        .unwrap();
+        assert_eq!(
+            with_tp.backing_parsed(),
+            LinkBacking::ForeignKey {
+                property: "buyerId".into(),
+                side: LinkEnd::B,
+                target_property: Some("code".into()),
+            }
+        );
+        assert!(with_tp.validate().is_ok());
+    }
+
+    #[test]
+    fn backing_fk_target_property_bad_rejected() {
+        let lt: LinkTypeDef = serde_json::from_value(json!({
+            "apiName": "l", "objectTypeA": "A", "objectTypeB": "B",
+            "backing": { "fk": { "sourceProperty": "a", "targetProperty": "2bad" } }
+        }))
+        .unwrap();
+        let e = lt.validate().unwrap_err().to_string();
+        assert!(e.contains("targetProperty"), "应报 targetProperty 非法: {e}");
+    }
+
+    #[test]
+    fn backing_fk_unknown_key_rejected() {
+        let lt: LinkTypeDef = serde_json::from_value(json!({
+            "apiName": "l", "objectTypeA": "A", "objectTypeB": "B",
+            "backing": { "fk": { "sourceProperty": "a", "side": "b", "whatever": 1 } }
+        }))
+        .unwrap();
+        assert!(lt.validate().is_err());
+    }
+
+    #[test]
+    fn backing_fk_many_to_many_rejected() {
+        let lt: LinkTypeDef = serde_json::from_value(json!({
+            "apiName": "l", "objectTypeA": "A", "objectTypeB": "B", "cardinality": "manyToMany",
+            "backing": { "fk": { "sourceProperty": "a", "side": "b" } }
+        }))
+        .unwrap();
+        let e = lt.validate().unwrap_err().to_string();
+        assert!(e.contains("manyToMany"), "应报 FK 不支持 manyToMany: {e}");
+    }
+
+    #[test]
+    fn backing_join_table_parsed_and_validated() {
+        let lt: LinkTypeDef = serde_json::from_value(json!({
+            "apiName": "supplierTags", "objectTypeA": "Supplier", "objectTypeB": "Tag",
+            "cardinality": "manyToMany",
+            "backing": { "joinTable": { "table": "r_supplier_tag", "leftColumn": "supplier_pk", "rightColumn": "tag_pk" } }
+        }))
+        .unwrap();
+        assert_eq!(
+            lt.backing_parsed(),
+            LinkBacking::JoinTable {
+                table: "r_supplier_tag".into(),
+                left_column: "supplier_pk".into(),
+                right_column: "tag_pk".into(),
+            }
+        );
+        assert!(lt.validate().is_ok());
+
+        // 非 manyToMany 拒绝。
+        let bad: LinkTypeDef = serde_json::from_value(json!({
+            "apiName": "l", "objectTypeA": "A", "objectTypeB": "B",
+            "backing": { "joinTable": { "table": "t", "leftColumn": "l", "rightColumn": "r" } }
+        }))
+        .unwrap();
+        assert!(bad.validate().is_err());
+
+        // 缺字段拒绝。
+        let missing: LinkTypeDef = serde_json::from_value(json!({
+            "apiName": "l", "objectTypeA": "A", "objectTypeB": "B", "cardinality": "manyToMany",
+            "backing": { "joinTable": { "table": "t", "rightColumn": "r" } }
+        }))
+        .unwrap();
+        let e = missing.validate().unwrap_err().to_string();
+        assert!(e.contains("leftColumn"), "应报 leftColumn 不能为空: {e}");
+    }
+
+    #[test]
+    fn backing_intermediary_parsed_and_validated() {
+        let lt: LinkTypeDef = serde_json::from_value(json!({
+            "apiName": "flightCrew", "objectTypeA": "Aircraft", "objectTypeB": "Flight",
+            "cardinality": "manyToMany",
+            "backing": { "intermediary": { "objectType": "Manifest", "leftProperty": "aircraftId", "rightProperty": "flightId" } }
+        }))
+        .unwrap();
+        assert_eq!(
+            lt.backing_parsed(),
+            LinkBacking::Intermediary {
+                object_type: "Manifest".into(),
+                left_property: "aircraftId".into(),
+                right_property: "flightId".into(),
+            }
+        );
+        assert!(lt.validate().is_ok());
+
+        // 非 manyToMany 拒绝。
+        let bad: LinkTypeDef = serde_json::from_value(json!({
+            "apiName": "l", "objectTypeA": "A", "objectTypeB": "B",
+            "backing": { "intermediary": { "objectType": "M", "leftProperty": "l", "rightProperty": "r" } }
+        }))
+        .unwrap();
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
     fn backing_garbage_falls_back_to_edge() {
-        // 非法/无法识别的 backing JSON → Edge 兜底（不崩、向后兼容）。
+        // 非法/无法识别的 backing JSON → Edge 兜底（不崩）。
         let lt: LinkTypeDef = serde_json::from_value(json!({
             "apiName": "l", "objectTypeA": "A", "objectTypeB": "B",
             "backing": { "kind": "bogusKind" }
