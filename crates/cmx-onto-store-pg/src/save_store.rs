@@ -6,7 +6,7 @@
 //! view 的 payload 剥离 layout（layout 变更不产生修订）；删除写墓碑（deleted=true）。
 
 use cmx_core::model::cell::DataValue;
-use cmx_database_pg::{execute_sql_with_params, get_default_pg_db_manager, query_sql_with_params, SqlParams};
+use cmx_database_pg::{execute_sql_with_params, get_default_pg_db_manager, SqlParams};
 use cmx_onto_model::{
     ActionTypeDef, FunctionDef, InterfaceDef, LinkTypeDef, ObjectTypeDef, SceneViewDef,
     SharedPropertyTypeDef, StoreError, StoreResult,
@@ -460,28 +460,31 @@ impl PgOntologyStore {
         Err(StoreError::Backend("修订号并发冲突（重试 3 次未成功），请重试".into()))
     }
 
-    /// 当前 live 定义 JSON（墓碑 payload 用；view 剥离 layout）。
+    /// 当前 live 定义 JSON（墓碑 payload 用；camelCase serde 形状——revert 按类型化定义
+    /// 解析，须与保存路径 payload 同形状；view 剥离 layout）。
     async fn current_def_json(&self, kind: &str, api_name: &str) -> StoreResult<Option<Value>> {
-        let table = revision_table(kind)
-            .ok_or_else(|| StoreError::Backend(format!("未知资源类别 {kind}")))?;
-        let ds = query_sql_with_params(
-            &self.db_id,
-            None,
-            &format!("SELECT to_jsonb(t) AS def FROM {table} t WHERE t.api_name = $1"),
-            SqlParams::DataValues(vec![DataValue::String(api_name.to_string())]),
-            "current_def_json",
-        )
-        .await
-        .map_err(|e| StoreError::Backend(format!("读删除前定义失败: {e}")))?;
-        let Some(row) = ds.iter().next() else {
+        use cmx_onto_model::OntologyStore;
+        let mut v: Value = match kind {
+            "object" => serde_json::to_value(self.get_object_type("", api_name).await.ok().flatten()),
+            "link" => serde_json::to_value(self.get_link_type("", api_name).await.ok().flatten()),
+            "interface" => serde_json::to_value(self.get_interface("", api_name).await.ok().flatten()),
+            "shared_property" => serde_json::to_value(self.get_shared_property("", api_name).await.ok().flatten()),
+            "action" => serde_json::to_value(self.get_action_type("", api_name).await.ok().flatten()),
+            "function" => serde_json::to_value(self.get_function("", api_name).await.ok().flatten()),
+            "view" => {
+                let view = self.get_view("", api_name).await.ok().flatten();
+                let mut vv = serde_json::to_value(view)
+                    .map_err(|e| StoreError::Backend(format!("序列化场景定义失败: {e}")))?;
+                if let Some(o) = vv.as_object_mut() {
+                    o.remove("layout");
+                }
+                Ok(vv)
+            }
+            other => return Err(StoreError::Backend(format!("未知资源类别 {other}"))),
+        }
+        .unwrap_or(Value::Null);
+        if v.is_null() {
             return Ok(None);
-        };
-        let mut v = crate::store::get_json(row, ds.schema.as_ref(), "def")?;
-        // to_jsonb(t) 产出 snake_case 列名行；修订 payload 统一 camelCase 前端形状——
-        // 七类形状各异，逐列映射成本高；此处保持列名原样仅作历史留档（revert 走 app 层
-        // 类型化解析，不消费本形状的 snake_case 键）。为可读性剥离 layout。
-        if let Some(obj) = v.as_object_mut() {
-            obj.remove("layout");
         }
         Ok(Some(v))
     }

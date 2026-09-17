@@ -97,8 +97,8 @@ impl PgOntologyStore {
             .query_tx(
                 txn,
                 "INSERT INTO om_revision (resource_kind, api_name, revision, payload, change_note, changed_by, deleted) \
-                 SELECT $1, $2, COALESCE(MAX(revision), 0) + 1, $3, $4, $5, $6 \
-                 FROM om_revision WHERE resource_kind = $1 AND api_name = $2 \
+                 SELECT $1::varchar, $2::varchar, COALESCE(MAX(revision), 0) + 1, $3::jsonb, NULLIF($4::text, ''), $5::varchar, $6::boolean \
+                 FROM om_revision WHERE resource_kind = $1::varchar AND api_name = $2::varchar \
                  RETURNING revision",
                 vec![
                     DataValue::String(kind.to_string()),
@@ -178,6 +178,22 @@ impl PgOntologyStore {
             .collect())
     }
 
+    /// 按 (kind, apiName, revision) 定位修订全局 id（revert 契约：三元组定位，非全局 id）。
+    pub async fn find_revision_id(&self, kind: &str, api_name: &str, revision: i64) -> StoreResult<Option<i64>> {
+        let ds = self
+            .query(
+                "SELECT id FROM om_revision WHERE resource_kind = $1::varchar AND api_name = $2::varchar AND revision = $3",
+                vec![
+                    DataValue::String(kind.to_string()),
+                    DataValue::String(api_name.to_string()),
+                    DataValue::Int(revision),
+                ],
+                "om_revision_find",
+            )
+            .await?;
+        Ok(ds.iter().next().map(|row| get_i64(row, ds.schema.as_ref(), "id")))
+    }
+
     /// 单条修订详情（含 payload）。
     pub async fn get_revision_detail(&self, id: i64) -> StoreResult<Option<Value>> {
         let ds = self
@@ -253,13 +269,13 @@ impl PgOntologyStore {
             .exec_tx(
                 txn,
                 &format!(
-                    "UPDATE {table} SET status = $1, \
+                    "UPDATE {table} SET status = $1::varchar, \
                      deprecation_reason = NULLIF($2::text, ''), \
                      sunset_at = NULLIF($3::text, '')::date, \
                      replacement_api_name = NULLIF($4::text, ''), \
-                     deprecated_at = CASE WHEN $1 = 'deprecated' THEN now() ELSE NULL END, \
+                     deprecated_at = CASE WHEN $1::varchar = 'deprecated' THEN now() ELSE NULL END, \
                      updated_at = now() \
-                     WHERE api_name = $5"
+                     WHERE api_name = $5::varchar"
                 ),
                 vec![
                     DataValue::String(target.as_str().to_string()),
@@ -289,13 +305,13 @@ impl PgOntologyStore {
         let n = self
             .exec_tx(
                 txn,
-                "UPDATE om_link_type SET status = $1, \
+                "UPDATE om_link_type SET status = $1::varchar, \
                  deprecation_reason = NULLIF($2::text, ''), \
                  sunset_at = NULLIF($3::text, '')::date, \
                  replacement_api_name = NULLIF($4::text, ''), \
-                 deprecated_at = CASE WHEN $1 = 'deprecated' THEN now() ELSE NULL END, \
+                 deprecated_at = CASE WHEN $1::varchar = 'deprecated' THEN now() ELSE NULL END, \
                  updated_at = now() \
-                 WHERE api_name = ANY($5)",
+                 WHERE api_name = ANY($5::varchar[])",
                 vec![
                     DataValue::String(target.as_str().to_string()),
                     DataValue::String(dep.reason),

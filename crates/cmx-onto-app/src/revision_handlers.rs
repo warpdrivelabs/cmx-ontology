@@ -84,11 +84,22 @@ pub async fn revert(Json(req): Json<RevertReq>) -> Result<Json<ApiResp<Value>>> 
     if !cmx_onto_store_pg::revision_store::REVISION_KINDS.contains(&kind) {
         return Err(OntoError::bad_request(format!("kind 非法：{kind:?}")));
     }
+    // 方案 §6.3 契约：body {kind, apiName, revision}——按资源三元组定位（非全局 id）。
+    let rev_id = store()
+        .find_revision_id(kind, &req.api_name, req.revision)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("定位修订失败: {e}")))?
+        .ok_or_else(|| {
+            OntoError::not_found(format!(
+                "修订 {}#{}#{} 不存在",
+                kind, req.api_name, req.revision
+            ))
+        })?;
     let detail = store()
-        .get_revision_detail(req.revision)
+        .get_revision_detail(rev_id)
         .await
         .map_err(|e| OntoError::internal_error(format!("装载修订失败: {e}")))?
-        .ok_or_else(|| OntoError::not_found(format!("修订 #{} 不存在", req.revision)))?;
+        .ok_or_else(|| OntoError::not_found(format!("修订 #{} 不存在", rev_id)))?;
     // 校验修订归属（kind/apiName 与修订行一致，防错位恢复）。
     let d_kind = detail.get("resourceKind").and_then(|v| v.as_str()).unwrap_or("");
     let d_name = detail.get("apiName").and_then(|v| v.as_str()).unwrap_or("");
