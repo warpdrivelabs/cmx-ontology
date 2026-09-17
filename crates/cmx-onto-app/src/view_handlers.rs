@@ -88,9 +88,11 @@ pub async fn list_views() -> Result<Json<ApiResp<Value>>> {
             "source": "auto",
             "objectCount": count,
             "interfaceCount": 0,
+            "linkCount": 0,
+            "status": "experimental",
             "virtual": true,
             "version": 0,
-            "members": { "objects": [], "interfaces": [] },
+            "members": { "objects": [], "interfaces": [], "links": [] },
         }));
     }
     Ok(Json(ApiResp::ok(json!(out))))
@@ -146,10 +148,16 @@ pub async fn save_view(Json(req): Json<SaveViewReq>) -> Result<Json<ApiResp<Valu
         source: req.source,
         layout: if keep_layout { json!({}) } else { req.layout },
         version: req.version,
+        // status / 弃用元数据剥离（七类纪律：只能经 /lifecycle/transition 变更）。
+        status: cmx_onto_model::TypeStatus::default(),
+        deprecation: None,
     };
     def.validate()
         .map_err(|e| OntoError::business_error(format!("场景视图非法: {e}")))?;
     let tenant = current_tenant();
+    // links 白名单清洗（方案 §7.2 成员联动）：仅保留真实存在且两端都在成员集内的关系——
+    // 移除对象后其边自动出清；写路径单点收口，前端无需先算后传。
+    sanitize_view_links(&tenant, &mut def.members).await?;
     if keep_layout {
         if let Some(existing) = store()
             .get_view(&tenant, &def.api_name)
@@ -159,18 +167,58 @@ pub async fn save_view(Json(req): Json<SaveViewReq>) -> Result<Json<ApiResp<Valu
             def.layout = existing.layout;
         }
     }
+    let version = save_view_core(&tenant, def, &crate::handlers::changed_by(), None).await?;
+    Ok(Json(ApiResp::ok(
+        json!({ "apiName": req.api_name, "saved": true, "version": version }),
+    )))
+}
+
+/// 保存场景 core（handler 与 revert 共用：落库 + 修订 + SSE）。
+pub(crate) async fn save_view_core(
+    tenant: &str,
+    def: SceneViewDef,
+    changed_by: &str,
+    change_note: Option<&str>,
+) -> Result<u32> {
     let version = store()
-        .upsert_view_locked(&tenant, &def)
+        .save_view_with_revision(&def, changed_by, change_note)
         .await
         .map_err(store_err("保存场景视图失败"))?;
     crate::events::emit(
-        &tenant,
+        tenant,
         "view-changed",
-        json!({ "by": current_display_user(), "reason": format!("view-save:{}", def.api_name) }),
+        json!({
+            "by": changed_by,
+            "reason": format!("view-members:{}", def.api_name),
+            "changeType": "members",
+            "view": def.api_name,
+        }),
     );
-    Ok(Json(ApiResp::ok(
-        json!({ "apiName": def.api_name, "saved": true, "version": version }),
-    )))
+    Ok(version)
+}
+
+/// links 白名单清洗：drop 不存在的关系类型与两端不在成员集内的关系（manual 专用；auto 成员恒空不触达）。
+async fn sanitize_view_links(tenant: &str, members: &mut cmx_onto_model::ViewMembers) -> Result<()> {
+    if members.links.is_empty() {
+        return Ok(());
+    }
+    let all_links = store()
+        .list_link_types(tenant)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("装载关系清单失败: {e}")))?;
+    let objects: std::collections::BTreeSet<&str> =
+        members.objects.iter().map(|s| s.as_str()).collect();
+    let known: std::collections::BTreeSet<&str> =
+        all_links.iter().map(|l| l.api_name.as_str()).collect();
+    members.links.retain(|lk| {
+        known.contains(lk.as_str())
+            && all_links
+                .iter()
+                .find(|l| &l.api_name == lk)
+                .map(|l| objects.contains(l.object_type_a.as_str()) && objects.contains(l.object_type_b.as_str()))
+                .unwrap_or(false)
+    });
+    Ok(())
 }
 
 /// POST /views/remove 请求体。
@@ -204,7 +252,12 @@ pub async fn remove_view(Json(req): Json<RemoveViewReq>) -> Result<Json<ApiResp<
     crate::events::emit(
         &tenant,
         "view-changed",
-        json!({ "by": current_display_user(), "reason": format!("view-remove:{}", req.api_name) }),
+        json!({
+            "by": current_display_user(),
+            "reason": format!("view-remove:{}", req.api_name),
+            "changeType": "members",
+            "view": req.api_name,
+        }),
     );
     Ok(Json(ApiResp::ok(json!({ "apiName": req.api_name, "removed": n > 0 }))))
 }
@@ -248,6 +301,8 @@ pub async fn save_view_layout(
                 source: ViewSource::Auto,
                 layout: req.layout,
                 version: 0,
+                status: cmx_onto_model::TypeStatus::default(),
+                deprecation: None,
             };
             store()
                 .upsert_view_locked(&tenant, &def)
@@ -262,6 +317,16 @@ pub async fn save_view_layout(
             req.api_name
         )));
     }
+    crate::events::emit(
+        &tenant,
+        "view-changed",
+        json!({
+            "by": current_display_user(),
+            "reason": format!("view-layout:{}", req.api_name),
+            "changeType": "layout",
+            "view": req.api_name,
+        }),
+    );
     Ok(Json(ApiResp::ok(json!({ "apiName": req.api_name, "saved": true }))))
 }
 
@@ -272,6 +337,8 @@ pub async fn save_view_layout(
 #[serde(rename_all = "camelCase", default)]
 pub struct GraphQuery {
     pub view: Option<String>,
+    /// 状态分层（D9）：studio 建模口径默认全量；其他消费方可显式收窄。
+    pub include: Option<String>,
 }
 
 /// GET /graph?view=X —— 服务端组装成员级 spec（一条请求到位）。
@@ -284,10 +351,12 @@ pub async fn graph(Query(q): Query<GraphQuery>) -> Result<Json<ApiResp<Value>>> 
         .view
         .clone()
         .ok_or_else(|| OntoError::bad_request("缺少 view 参数（场景视图 apiName）"))?;
+    let filter = crate::filter::StatusFilter::parse(q.include.as_deref())?;
 
     let s = store();
-    // 1. 解析视图 → 成员集合（manual 物化 / auto 按域现算；无行的 auto: 虚拟条目同样现算）。
-    let (view_meta, member_objects, member_interfaces, layout) = resolve_view(&tenant, &view_name).await?;
+    // 1. 解析视图 → 成员集合 + links 白名单（manual 物化 / auto 按域现算 links 不设限）。
+    let (view_meta, member_objects, member_interfaces, links_whitelist, layout) =
+        resolve_view(&tenant, &view_name).await?;
 
     // 2. 成员对象全量定义（D15 批量；清单里被并发删除的静默跳过）。
     let defs = s
@@ -297,6 +366,14 @@ pub async fn graph(Query(q): Query<GraphQuery>) -> Result<Json<ApiResp<Value>>> 
     let def_by_name: BTreeMap<String, &ObjectTypeDef> =
         defs.iter().map(|d| (d.api_name.clone(), d)).collect();
 
+    // 悬空防御（§7.5）：成员引用了已不存在的对象/接口/关系 → Warning 清单（不阻断）。
+    let mut warnings: Vec<String> = Vec::new();
+    for name in &member_objects {
+        if !def_by_name.contains_key(name) {
+            warnings.push(format!("场景引用了已不存在的对象类型「{name}」"));
+        }
+    }
+
     // 3. 接口集合 = 成员对象 implements 并集 ∪ members.interfaces。
     let mut iface_names: BTreeSet<String> = member_interfaces.iter().cloned().collect();
     for d in &defs {
@@ -304,8 +381,22 @@ pub async fn graph(Query(q): Query<GraphQuery>) -> Result<Json<ApiResp<Value>>> 
             iface_names.insert(i.clone());
         }
     }
+    let mut live_ifaces: BTreeMap<String, String> = BTreeMap::new();
+    for name in &iface_names {
+        let iface = s
+            .get_interface(&tenant, name)
+            .await
+            .map_err(|e| OntoError::internal_error(format!("装载接口失败: {e}")))?;
+        match iface {
+            Some(i) => {
+                live_ifaces.insert(i.api_name.clone(), i.display_name.clone());
+            }
+            None => warnings.push(format!("场景引用了已不存在的接口「{name}」")),
+        }
+    }
 
-    // 4. 关系边：两端在场才画；单端在场 → 角标数据（externalCount/externalPeers）。
+    // 4. 关系边（方案 §7.1 D3）：边 =（link ∈ links 白名单）∧（两端在场）；
+    //    auto 视图 links 现算（不设限，等价现状）。单端在场 / 未入白名单 → 角标与可加入清单。
     let all_links = s
         .list_link_types(&tenant)
         .await
@@ -313,35 +404,66 @@ pub async fn graph(Query(q): Query<GraphQuery>) -> Result<Json<ApiResp<Value>>> 
     let member_set: BTreeSet<&str> = def_by_name.keys().map(|k| k.as_str()).collect();
     let mut edges: Vec<Value> = Vec::new();
     let mut external: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    let mut available_links: Vec<Value> = Vec::new();
+    let known_links: BTreeSet<&str> = all_links.iter().map(|l| l.api_name.as_str()).collect();
+    for name in links_whitelist.iter().flatten() {
+        if !known_links.contains(name.as_str()) {
+            warnings.push(format!("场景引用了已不存在的关系「{name}」"));
+        }
+    }
     for lt in &all_links {
         let a_in = member_set.contains(lt.object_type_a.as_str());
         let b_in = member_set.contains(lt.object_type_b.as_str());
-        match (a_in, b_in) {
-            (true, true) => edges.push(json!({
+        let in_whitelist = match &links_whitelist {
+            Some(w) => w.contains(&lt.api_name),
+            None => true,
+        };
+        let both = a_in && b_in;
+        if both && in_whitelist {
+            edges.push(json!({
                 "apiName": lt.api_name,
                 "source": lt.object_type_a,
                 "target": lt.object_type_b,
                 "displayName": lt.display_name,
                 "cardinality": serde_json::to_value(lt.cardinality).unwrap_or(json!("oneToMany")),
-            })),
-            (true, false) => external.entry(lt.object_type_a.clone()).or_default().push(json!({
+                "status": serde_json::to_value(lt.status).unwrap_or(json!("experimental")),
+            }));
+        } else if both && !in_whitelist {
+            // 两端在场但未入场景 links 白名单 → 实时可加入清单（审阅 3 增强裁决 §7.4.6）。
+            available_links.push(json!({
+                "apiName": lt.api_name,
+                "displayName": lt.display_name,
+                "source": lt.object_type_a,
+                "target": lt.object_type_b,
+                "sourceDisplayName": def_by_name.get(&lt.object_type_a).map(|d| d.display_name.clone()).unwrap_or_default(),
+                "targetDisplayName": def_by_name.get(&lt.object_type_b).map(|d| d.display_name.clone()).unwrap_or_default(),
+            }));
+        }
+        if a_in && !(b_in && in_whitelist) {
+            external.entry(lt.object_type_a.clone()).or_default().push(json!({
                 "apiName": lt.api_name,
                 "displayName": lt.display_name,
                 "peer": lt.object_type_b,
-            })),
-            (false, true) => external.entry(lt.object_type_b.clone()).or_default().push(json!({
+                "inScene": in_whitelist,
+            }));
+        }
+        if b_in && !(a_in && in_whitelist) {
+            external.entry(lt.object_type_b.clone()).or_default().push(json!({
                 "apiName": lt.api_name,
                 "displayName": lt.display_name,
                 "peer": lt.object_type_a,
-            })),
-            (false, false) => {}
+                "inScene": in_whitelist,
+            }));
         }
     }
 
-    // 5. 组装节点（对象全卡 + 接口胶囊；属性投影与 designer 同口径）。
+    // 5. 组装节点（对象全卡 + 接口胶囊；属性投影与 designer 同口径；include 过滤默认全量）。
     let mut nodes: Vec<Value> = Vec::new();
     let mut shared_refs: BTreeSet<String> = BTreeSet::new();
     for d in &defs {
+        if !filter.allows(d.status) {
+            continue;
+        }
         let mut props: Vec<Value> = Vec::new();
         for p in &d.properties {
             if let Some(sp) = &p.shared_property {
@@ -369,17 +491,12 @@ pub async fn graph(Query(q): Query<GraphQuery>) -> Result<Json<ApiResp<Value>>> 
             "externalPeers": peers,
         }));
     }
-    for name in &iface_names {
-        let iface = s
-            .get_interface(&tenant, name)
-            .await
-            .map_err(|e| OntoError::internal_error(format!("装载接口失败: {e}")))?;
-        let Some(iface) = iface else { continue };
+    for (name, display) in &live_ifaces {
         nodes.push(json!({
-            "id": iface.api_name,
+            "id": name,
             "kind": "interface",
-            "displayName": iface.display_name,
-            "status": serde_json::to_value(iface.status).unwrap_or(json!("experimental")),
+            "displayName": display,
+            "status": "active",
         }));
     }
 
@@ -399,28 +516,33 @@ pub async fn graph(Query(q): Query<GraphQuery>) -> Result<Json<ApiResp<Value>>> 
         "spec": { "name": view_name, "nodes": nodes, "edges": edges },
         "layout": layout,
         "sharedProperties": shared_values,
+        "availableLinks": available_links,
+        "warnings": warnings,
     }))))
 }
 
-/// 解析视图 →（meta、成员对象、成员接口、layout）。auto 视图（含虚拟条目）按 DAM 现算成员。
+/// 解析视图 →（meta、成员对象、成员接口、links 白名单、layout）。
+/// manual 返回 members.links 白名单；auto（含虚拟条目）links 读时现算（None = 不设限）。
+#[allow(clippy::type_complexity)]
 async fn resolve_view(
     tenant: &str,
     view_name: &str,
-) -> Result<(Value, Vec<String>, Vec<String>, Value)> {
+) -> Result<(Value, Vec<String>, Vec<String>, Option<Vec<String>>, Value)> {
     let s = store();
     let row = s
         .get_view(tenant, view_name)
         .await
         .map_err(|e| OntoError::internal_error(format!("装载场景视图失败: {e}")))?;
     if let Some(def) = row {
-        let (objects, ifaces) = match def.source {
+        let (objects, ifaces, links) = match def.source {
             ViewSource::Manual => (
                 def.members.objects.clone(),
                 def.members.interfaces.clone(),
+                Some(def.members.links.clone()),
             ),
             ViewSource::Auto => {
                 let key = def.api_name.strip_prefix("auto:").unwrap_or(&def.api_name);
-                (domain_objects(tenant, key).await?, Vec::new())
+                (domain_objects(tenant, key).await?, Vec::new(), None)
             }
         };
         let meta = json!({
@@ -431,10 +553,12 @@ async fn resolve_view(
             "source": serde_json::to_value(def.source).unwrap_or(json!("manual")),
             "objectCount": objects.len(),
             "interfaceCount": ifaces.len(),
+            "linkCount": links.as_ref().map(|l| l.len()).unwrap_or(0),
+            "status": serde_json::to_value(def.status).unwrap_or(json!("experimental")),
             "virtual": false,
             "version": def.version,
         });
-        return Ok((meta, objects, ifaces, def.layout));
+        return Ok((meta, objects, ifaces, links, def.layout));
     }
     // 无行：仅 auto: 虚拟形态可现算；其余 404。
     let Some(domain) = view_name.strip_prefix("auto:") else {
@@ -449,14 +573,16 @@ async fn resolve_view(
         "source": "auto",
         "objectCount": objects.len(),
         "interfaceCount": 0,
+        "linkCount": 0,
+        "status": "experimental",
         "virtual": true,
         "version": 0,
     });
-    Ok((meta, objects, Vec::new(), Value::Null))
+    Ok((meta, objects, Vec::new(), None, Value::Null))
 }
 
 /// 域内对象清单（auto 成员现算；域消失 → 空集 → 上层自然渲染空场景）。
-async fn domain_objects(tenant: &str, domain: &str) -> Result<Vec<String>> {
+pub(crate) async fn domain_objects(tenant: &str, domain: &str) -> Result<Vec<String>> {
     let metas = store()
         .list_object_types(tenant)
         .await

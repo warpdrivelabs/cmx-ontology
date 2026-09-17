@@ -6,7 +6,7 @@
 //!
 //! 输入为**归一化 JSON**（调用方从 cmx-model DocMetaView/DctQuery 适配而来），保持 onto 与 cmx-model 解耦。
 
-use crate::def::{DamRef, DocTypeRef, LinkCardinality, LinkTypeDef, ObjectTypeDef, PropertyBaseType, PropertyTypeDef, TypeStatus};
+use crate::def::{DamRef, DocTypeRef, LinkCardinality, LinkTypeDef, ObjectTypeDef, PropertyBaseType, PropertyTypeDef};
 use crate::objectset::ObjectRecord;
 use serde_json::{json, Map, Value};
 
@@ -109,7 +109,7 @@ fn entity_to_level_prop(
 
 /// PropertyTypeDef → 归一化 JSON（放进 constraints.children；保留 apiName/baseType/required/子层 constraints）。
 fn prop_to_json(p: &PropertyTypeDef) -> Value {
-    let base = serde_json::to_value(&p.base_type).unwrap_or(Value::String("string".into()));
+    let base = serde_json::to_value(p.base_type).unwrap_or(Value::String("string".into()));
     let mut o = json!({ "apiName": p.api_name, "baseType": base, "required": p.required });
     if !p.display_name.is_empty() {
         o["displayName"] = Value::String(p.display_name.clone());
@@ -216,7 +216,7 @@ pub fn map_doc(doc: &Value) -> Result<DocImport, String> {
             doc_type: doc_type.clone(),
             primary_key,
             title_property,
-            status: TypeStatus::Active, // 导入自既有定义 → 直接可用
+            // 附录 C（20260917）：导入默认 experimental（统一「新资源默认试验态」），显式激活走 /lifecycle/transition。
             properties: props,
             cmx_origin: Some(origin.clone()),
             ..Default::default()
@@ -245,7 +245,7 @@ pub fn map_dct(dct: &Value) -> Result<DctImport, String> {
         dam: dam_of(dct),
         primary_key: code_prop.clone(),
         title_property: name_prop.clone(),
-        status: TypeStatus::Active,
+        // 附录 C（20260917）：导入默认 experimental（统一「新资源默认试验态」）。
         properties: vec![
             PropertyTypeDef { api_name: code_prop.clone(), base_type: PropertyBaseType::String, required: true, ..Default::default() },
             PropertyTypeDef { api_name: name_prop.clone(), base_type: PropertyBaseType::String, ..Default::default() },

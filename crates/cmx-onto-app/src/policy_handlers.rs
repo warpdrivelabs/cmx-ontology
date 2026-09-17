@@ -74,11 +74,27 @@ pub struct SecureLoadReq {
     /// jwt/多租户模式忽略此字段、以令牌真实身份为准（防越权）。
     #[serde(default)]
     pub subjects: Vec<String>,
+    /// 场景上下文（§7.3；与 /object-sets/load 同规则——统一口径不留旁路）。
+    #[serde(default)]
+    pub view: Option<String>,
+    /// 状态分层（D9，§5.5；与 /load 同参数）。
+    #[serde(default)]
+    pub include: Option<String>,
 }
 
 /// POST /secure/object-sets/load —— 按当前主体的策略加载对象集（行级残差 + 列级脱敏）。
 pub async fn secure_load(Json(req): Json<SecureLoadReq>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
+    // 场景 + 状态过滤（先于 PEP；与 /object-sets/load 同规则同顺序）。
+    let scope = crate::filter::SceneScope::resolve(&tenant, req.view.as_deref()).await?;
+    let filter = crate::filter::StatusFilter::parse(req.include.as_deref())?;
+    if let Some(scope) = &scope {
+        scope.ensure_set_allowed(&req.object_set)?;
+    }
+    let terminal_pre = req.object_set.terminal_object_type().unwrap_or("").to_string();
+    if !terminal_pre.is_empty() {
+        crate::filter::ensure_object_queryable(&tenant, &terminal_pre, &filter).await?;
+    }
     // 主体：优先请求显式声明（dev/off 模式）；否则从上下文推导（role:tenant + user:current_user）。
     let subjects = if req.subjects.is_empty() {
         current_subjects()

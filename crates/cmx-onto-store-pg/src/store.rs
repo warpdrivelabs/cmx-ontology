@@ -91,7 +91,8 @@ impl PgOntologyStore {
         let ds = self
             .query(
                 "SELECT api_name, display_name, description, icon, color, primary_key, title_property, \
-                 status, properties, implements, dam, doc_type, datasource, cmx_origin, version \
+                 status, properties, implements, dam, doc_type, datasource, cmx_origin, version, \
+                 deprecation_reason, to_char(sunset_at, 'YYYY-MM-DD') AS sunset_at, replacement_api_name, deprecated_at \
                  FROM om_object_type WHERE api_name = ANY($1)",
                 vec![DataValue::Array(
                     api_names.iter().map(|n| DataValue::String(n.clone())).collect(),
@@ -122,18 +123,20 @@ impl PgOntologyStore {
         def: &ObjectTypeDef,
     ) -> StoreResult<u32> {
         let now = Utc::now();
+        // 状态剥离（方案 20260917 §5.2）：INSERT 不带 status（新行落列默认 experimental）、
+        // DO UPDATE 不含 status——状态只能经 /lifecycle/transition 变更，save 保留 live 现值。
         if def.version == 0 {
             // 盲写路径：INSERT 定版本 1；冲突覆盖时在旧版本上 +1（服务端单一真相，不吃客户端值）。
             let ds = self
                 .query(
                     "INSERT INTO om_object_type \
-                     (api_name, display_name, description, icon, color, primary_key, title_property, status, \
+                     (api_name, display_name, description, icon, color, primary_key, title_property, \
                       properties, implements, dam, doc_type, datasource, cmx_origin, version, created_at, updated_at) \
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,1,$15,$15) \
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,1,$14,$14) \
                      ON CONFLICT (api_name) DO UPDATE SET display_name=EXCLUDED.display_name, \
                       description=EXCLUDED.description, icon=EXCLUDED.icon, color=EXCLUDED.color, \
                       primary_key=EXCLUDED.primary_key, title_property=EXCLUDED.title_property, \
-                      status=EXCLUDED.status, properties=EXCLUDED.properties, implements=EXCLUDED.implements, \
+                      properties=EXCLUDED.properties, implements=EXCLUDED.implements, \
                       dam=EXCLUDED.dam, doc_type=EXCLUDED.doc_type, datasource=EXCLUDED.datasource, cmx_origin=EXCLUDED.cmx_origin, \
                       version=om_object_type.version + 1, updated_at=EXCLUDED.updated_at \
                      RETURNING version",
@@ -145,7 +148,6 @@ impl PgOntologyStore {
                         DataValue::String(def.color.clone()),
                         DataValue::String(def.primary_key.clone()),
                         DataValue::String(def.title_property.clone()),
-                        DataValue::String(enum_to_str(&def.status)),
                         json_arr(&def.properties),
                         json_arr(&def.implements),
                         DataValue::Json(serde_json::to_string(&def.dam).unwrap_or_else(|_| "{}".to_string())),
@@ -167,9 +169,9 @@ impl PgOntologyStore {
         let ds = self
             .query(
                 "UPDATE om_object_type SET display_name=$2, description=$3, icon=$4, color=$5, \
-                 primary_key=$6, title_property=$7, status=$8, properties=$9, implements=$10, \
-                 dam=$11, doc_type=$12, datasource=$13, cmx_origin=$14, version=version + 1, updated_at=$15 \
-                 WHERE api_name=$1 AND version=$16 \
+                 primary_key=$6, title_property=$7, properties=$8, implements=$9, \
+                 dam=$10, doc_type=$11, datasource=$12, cmx_origin=$13, version=version + 1, updated_at=$14 \
+                 WHERE api_name=$1 AND version=$15 \
                  RETURNING version",
                 vec![
                     DataValue::String(def.api_name.clone()),
@@ -179,7 +181,6 @@ impl PgOntologyStore {
                     DataValue::String(def.color.clone()),
                     DataValue::String(def.primary_key.clone()),
                     DataValue::String(def.title_property.clone()),
-                    DataValue::String(enum_to_str(&def.status)),
                     json_arr(&def.properties),
                     json_arr(&def.implements),
                     DataValue::Json(serde_json::to_string(&def.dam).unwrap_or_else(|_| "{}".to_string())),
@@ -218,11 +219,11 @@ impl PgOntologyStore {
 
     // ─────────────────── 版本快照（存档栈读取；写入走 snapshot_store） ───────────────────
 
-    /// 列出全部存档版本（版本降序）。
+    /// 列出全部存档版本（版本降序；含 tag 非空的命名发布标记）。
     pub async fn list_versions(&self) -> StoreResult<Vec<OntologyVersionMeta>> {
         let ds = self
             .query(
-                "SELECT version, rev, summary, published_by, published_at FROM om_version \
+                "SELECT version, rev, summary, archived_by, archived_at, tag, release_note FROM om_version \
                  ORDER BY version DESC",
                 vec![],
                 "om_versions",
@@ -235,8 +236,10 @@ impl PgOntologyStore {
                 version: get_i64(row, schema, "version") as u32,
                 rev: get_opt_string(row, schema, "rev").unwrap_or_default(),
                 summary: get_opt_string(row, schema, "summary").unwrap_or_default(),
-                published_by: get_opt_string(row, schema, "published_by"),
-                published_at: get_opt_ts(row, schema, "published_at").unwrap_or_else(Utc::now),
+                archived_by: get_opt_string(row, schema, "archived_by"),
+                archived_at: get_opt_ts(row, schema, "archived_at").unwrap_or_else(Utc::now),
+                tag: get_opt_string(row, schema, "tag").filter(|s| !s.is_empty()),
+                release_note: get_opt_string(row, schema, "release_note").filter(|s| !s.is_empty()),
             });
         }
         Ok(out)
@@ -324,17 +327,18 @@ impl OntologyStore for PgOntologyStore {
 
     async fn upsert_object_type(&self, _tenant: &str, def: &ObjectTypeDef) -> StoreResult<()> {
         let now = Utc::now();
+        // 状态剥离（§5.2）：save 不写 status（新行落列默认 experimental；覆盖保留 live 现值）。
         self.exec(
             "INSERT INTO om_object_type \
-             (api_name, display_name, description, icon, color, primary_key, title_property, status, \
+             (api_name, display_name, description, icon, color, primary_key, title_property, \
               properties, implements, dam, doc_type, datasource, cmx_origin, version, created_at, updated_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$16) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,1,$14,$14) \
              ON CONFLICT (api_name) DO UPDATE SET display_name=EXCLUDED.display_name, \
               description=EXCLUDED.description, icon=EXCLUDED.icon, color=EXCLUDED.color, \
               primary_key=EXCLUDED.primary_key, title_property=EXCLUDED.title_property, \
-              status=EXCLUDED.status, properties=EXCLUDED.properties, implements=EXCLUDED.implements, \
-              dam=EXCLUDED.dam, doc_type=EXCLUDED.doc_type, datasource=EXCLUDED.datasource, cmx_origin=EXCLUDED.cmx_origin, version=EXCLUDED.version, \
-              updated_at=EXCLUDED.updated_at",
+              properties=EXCLUDED.properties, implements=EXCLUDED.implements, \
+              dam=EXCLUDED.dam, doc_type=EXCLUDED.doc_type, datasource=EXCLUDED.datasource, cmx_origin=EXCLUDED.cmx_origin, \
+              version=om_object_type.version + 1, updated_at=EXCLUDED.updated_at",
             vec![
                 DataValue::String(def.api_name.clone()),
                 DataValue::String(def.display_name.clone()),
@@ -343,14 +347,12 @@ impl OntologyStore for PgOntologyStore {
                 DataValue::String(def.color.clone()),
                 DataValue::String(def.primary_key.clone()),
                 DataValue::String(def.title_property.clone()),
-                DataValue::String(enum_to_str(&def.status)),
                 json_arr(&def.properties),
                 json_arr(&def.implements),
                 DataValue::Json(serde_json::to_string(&def.dam).unwrap_or_else(|_| "{}".to_string())),
                 DataValue::Json(serde_json::to_string(&def.doc_type).unwrap_or_else(|_| "{}".to_string())),
                 opt_json(&def.datasource),
                 opt_json(&def.cmx_origin),
-                DataValue::Int(def.version as i64),
                 DataValue::DateTime(now),
             ],
         )
@@ -366,7 +368,8 @@ impl OntologyStore for PgOntologyStore {
         let ds = self
             .query(
                 "SELECT api_name, display_name, description, icon, color, primary_key, title_property, \
-                 status, properties, implements, dam, doc_type, datasource, cmx_origin, version \
+                 status, properties, implements, dam, doc_type, datasource, cmx_origin, version, \
+                 deprecation_reason, to_char(sunset_at, 'YYYY-MM-DD') AS sunset_at, replacement_api_name, deprecated_at \
                  FROM om_object_type WHERE api_name = $1",
                 vec![DataValue::String(api_name.to_string())],
                 "om_object_type_one",
@@ -383,7 +386,8 @@ impl OntologyStore for PgOntologyStore {
         let ds = self
             .query(
                 "SELECT api_name, display_name, status, primary_key, \
-                 jsonb_array_length(properties) AS pc, properties, implements, dam, doc_type, version, updated_at \
+                 jsonb_array_length(properties) AS pc, properties, implements, dam, doc_type, version, updated_at, \
+                 deprecation_reason, to_char(sunset_at, 'YYYY-MM-DD') AS sunset_at, replacement_api_name, deprecated_at \
                  FROM om_object_type ORDER BY updated_at DESC",
                 vec![],
                 "om_object_type_list",
@@ -410,6 +414,7 @@ impl OntologyStore for PgOntologyStore {
                     .unwrap_or_default(),
                 version: get_i64(row, s, "version") as u32,
                 updated_at: get_opt_ts(row, s, "updated_at"),
+                deprecation: deprecation_from_row(row, s),
             });
         }
         Ok(out)
@@ -429,15 +434,16 @@ impl OntologyStore for PgOntologyStore {
         let now = Utc::now();
         // 索引维护前置：JoinTable 缺表等硬失败在落库前拦截（否则 upsert 已生效、接口却报错，出现「半写」）。
         self.ensure_backing_indexes(def).await?;
+        // 状态剥离（§5.2）；乐观锁列维护（version 冲突覆盖时 +1）。
         self.exec(
             "INSERT INTO om_link_type \
              (api_name, display_name, cardinality, object_type_a, object_type_b, role_a, role_b, \
-              backing, status, created_at, updated_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10) \
+              backing, created_at, updated_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9) \
              ON CONFLICT (api_name) DO UPDATE SET display_name=EXCLUDED.display_name, \
               cardinality=EXCLUDED.cardinality, object_type_a=EXCLUDED.object_type_a, \
               object_type_b=EXCLUDED.object_type_b, role_a=EXCLUDED.role_a, role_b=EXCLUDED.role_b, \
-              backing=EXCLUDED.backing, status=EXCLUDED.status, updated_at=EXCLUDED.updated_at",
+              backing=EXCLUDED.backing, version=om_link_type.version + 1, updated_at=EXCLUDED.updated_at",
             vec![
                 DataValue::String(def.api_name.clone()),
                 DataValue::String(def.display_name.clone()),
@@ -447,7 +453,6 @@ impl OntologyStore for PgOntologyStore {
                 DataValue::String(def.role_a.clone()),
                 DataValue::String(def.role_b.clone()),
                 DataValue::Json(def.backing.to_string()),
-                DataValue::String(enum_to_str(&def.status)),
                 DataValue::DateTime(now),
             ],
         )
@@ -459,7 +464,9 @@ impl OntologyStore for PgOntologyStore {
         let ds = self
             .query(
                 "SELECT api_name, display_name, cardinality, object_type_a, object_type_b, \
-                 role_a, role_b, backing, status FROM om_link_type WHERE api_name = $1",
+                 role_a, role_b, backing, status, version, \
+                 deprecation_reason, to_char(sunset_at, 'YYYY-MM-DD') AS sunset_at, replacement_api_name, deprecated_at \
+                 FROM om_link_type WHERE api_name = $1",
                 vec![DataValue::String(api_name.to_string())],
                 "om_link_type_one",
             )
@@ -478,6 +485,8 @@ impl OntologyStore for PgOntologyStore {
             role_b: get_opt_string(row, s, "role_b").unwrap_or_default(),
             backing: get_json(row, s, "backing").unwrap_or(Value::Null),
             status: parse_status(row, s),
+            version: get_i64(row, s, "version") as u32,
+            deprecation: deprecation_from_row(row, s),
         }))
     }
 
@@ -487,7 +496,8 @@ impl OntologyStore for PgOntologyStore {
         let ds = self
             .query(
                 "SELECT l.api_name, l.display_name, l.cardinality, l.object_type_a, l.object_type_b, \
-                 l.status, l.updated_at, l.backing, da.dam AS dam_a, db.dam AS dam_b \
+                 l.status, l.updated_at, l.backing, da.dam AS dam_a, db.dam AS dam_b, \
+                 l.deprecation_reason, to_char(l.sunset_at, 'YYYY-MM-DD') AS sunset_at, l.replacement_api_name, l.deprecated_at \
                  FROM om_link_type l \
                  LEFT JOIN om_object_type da ON da.api_name = l.object_type_a \
                  LEFT JOIN om_object_type db ON db.api_name = l.object_type_b \
@@ -510,6 +520,7 @@ impl OntologyStore for PgOntologyStore {
                 dam_a: get_opt_json(row, s, "dam_a").and_then(|v| serde_json::from_value(v).ok()),
                 dam_b: get_opt_json(row, s, "dam_b").and_then(|v| serde_json::from_value(v).ok()),
                 backing: get_opt_json(row, s, "backing"),
+                deprecation: deprecation_from_row(row, s),
             });
         }
         Ok(out)
@@ -528,17 +539,16 @@ impl OntologyStore for PgOntologyStore {
     async fn upsert_interface(&self, _tenant: &str, def: &InterfaceDef) -> StoreResult<()> {
         let now = Utc::now();
         self.exec(
-            "INSERT INTO om_interface (api_name, display_name, properties, extends, status, created_at, updated_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$6) \
+            "INSERT INTO om_interface (api_name, display_name, properties, extends, created_at, updated_at) \
+             VALUES ($1,$2,$3,$4,$5,$5) \
              ON CONFLICT (api_name) DO UPDATE SET display_name=EXCLUDED.display_name, \
-              properties=EXCLUDED.properties, extends=EXCLUDED.extends, status=EXCLUDED.status, \
-              updated_at=EXCLUDED.updated_at",
+              properties=EXCLUDED.properties, extends=EXCLUDED.extends, \
+              version=om_interface.version + 1, updated_at=EXCLUDED.updated_at",
             vec![
                 DataValue::String(def.api_name.clone()),
                 DataValue::String(def.display_name.clone()),
                 json_arr(&def.properties),
                 json_arr(&def.extends),
-                DataValue::String(enum_to_str(&def.status)),
                 DataValue::DateTime(now),
             ],
         )
@@ -549,7 +559,9 @@ impl OntologyStore for PgOntologyStore {
     async fn get_interface(&self, _tenant: &str, api_name: &str) -> StoreResult<Option<InterfaceDef>> {
         let ds = self
             .query(
-                "SELECT api_name, display_name, properties, extends, status FROM om_interface WHERE api_name = $1",
+                "SELECT api_name, display_name, properties, extends, status, version, \
+                 deprecation_reason, to_char(sunset_at, 'YYYY-MM-DD') AS sunset_at, replacement_api_name, deprecated_at \
+                 FROM om_interface WHERE api_name = $1",
                 vec![DataValue::String(api_name.to_string())],
                 "om_interface_one",
             )
@@ -564,6 +576,8 @@ impl OntologyStore for PgOntologyStore {
             properties: get_json(row, s, "properties").ok().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
             extends: get_json(row, s, "extends").ok().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
             status: parse_status(row, s),
+            version: get_i64(row, s, "version") as u32,
+            deprecation: deprecation_from_row(row, s),
         }))
     }
 
@@ -572,7 +586,7 @@ impl OntologyStore for PgOntologyStore {
         // 包含性子查询：implements @> "apiName" 标量）；其余四类 simple 清单不填（None）。
         let ds = self
             .query(
-                "SELECT i.api_name, i.display_name, i.status, i.updated_at, i.extends,                  (SELECT json_agg(o.api_name) FROM om_object_type o WHERE o.implements @> to_jsonb(i.api_name::text)) AS implements_by \
+                "SELECT i.api_name, i.display_name, i.status, i.updated_at, i.extends,                  (SELECT json_agg(o.api_name) FROM om_object_type o WHERE o.implements @> to_jsonb(i.api_name::text)) AS implements_by,                  i.deprecation_reason, to_char(i.sunset_at, 'YYYY-MM-DD') AS sunset_at, i.replacement_api_name, i.deprecated_at \
                  FROM om_interface i ORDER BY i.updated_at DESC",
                 vec![],
                 "om_interface_list",
@@ -593,6 +607,7 @@ impl OntologyStore for PgOntologyStore {
                 runtime: None,
                 kind: None,
                 status: get_opt_string(row, s, "status").filter(|x| !x.is_empty()),
+                deprecation: deprecation_from_row(row, s),
             });
         }
         Ok(out)
@@ -648,11 +663,11 @@ impl OntologyStore for PgOntologyStore {
     ) -> StoreResult<()> {
         let now = Utc::now();
         self.exec(
-            "INSERT INTO om_shared_property (api_name, display_name, base_type, semantic_type, description, created_at, updated_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$6) \
+            "INSERT INTO om_shared_property (api_name, display_name, base_type, semantic_type, description, status, created_at, updated_at) \
+             VALUES ($1,$2,$3,$4,$5,'experimental',$6,$6) \
              ON CONFLICT (api_name) DO UPDATE SET display_name=EXCLUDED.display_name, \
               base_type=EXCLUDED.base_type, semantic_type=EXCLUDED.semantic_type, \
-              description=EXCLUDED.description, updated_at=EXCLUDED.updated_at",
+              description=EXCLUDED.description, version=om_shared_property.version + 1, updated_at=EXCLUDED.updated_at",
             vec![
                 DataValue::String(def.api_name.clone()),
                 DataValue::String(def.display_name.clone()),
@@ -673,7 +688,8 @@ impl OntologyStore for PgOntologyStore {
     ) -> StoreResult<Option<SharedPropertyTypeDef>> {
         let ds = self
             .query(
-                "SELECT api_name, display_name, base_type, semantic_type, description \
+                "SELECT api_name, display_name, base_type, semantic_type, description, status, version, \
+                 deprecation_reason, to_char(sunset_at, 'YYYY-MM-DD') AS sunset_at, replacement_api_name, deprecated_at \
                  FROM om_shared_property WHERE api_name = $1",
                 vec![DataValue::String(api_name.to_string())],
                 "om_shared_property_one",
@@ -689,13 +705,18 @@ impl OntologyStore for PgOntologyStore {
             base_type: str_to_enum(&get_opt_string(row, s, "base_type").unwrap_or_default()),
             semantic_type: get_opt_string(row, s, "semantic_type"),
             description: get_opt_string(row, s, "description").unwrap_or_default(),
+            status: parse_status(row, s),
+            version: get_i64(row, s, "version") as u32,
+            deprecation: deprecation_from_row(row, s),
         }))
     }
 
     async fn list_shared_properties(&self, _tenant: &str) -> StoreResult<Vec<SimpleTypeMeta>> {
         let ds = self
             .query(
-                "SELECT api_name, display_name, updated_at FROM om_shared_property ORDER BY updated_at DESC",
+                "SELECT api_name, display_name, updated_at, status, \
+                 deprecation_reason, to_char(sunset_at, 'YYYY-MM-DD') AS sunset_at, replacement_api_name, deprecated_at \
+                 FROM om_shared_property ORDER BY updated_at DESC",
                 vec![],
                 "om_shared_property_list",
             )
@@ -723,13 +744,13 @@ impl OntologyStore for PgOntologyStore {
         self.exec(
             "INSERT INTO om_action_type \
              (api_name, display_name, description, parameters, logic, validations, side_effects, \
-              function_backing, status, target_object_types, created_at, updated_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11) \
+              function_backing, target_object_types, created_at, updated_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10) \
              ON CONFLICT (api_name) DO UPDATE SET display_name=EXCLUDED.display_name, \
               description=EXCLUDED.description, parameters=EXCLUDED.parameters, logic=EXCLUDED.logic, \
               validations=EXCLUDED.validations, side_effects=EXCLUDED.side_effects, \
-              function_backing=EXCLUDED.function_backing, status=EXCLUDED.status, \
-              target_object_types=EXCLUDED.target_object_types, updated_at=EXCLUDED.updated_at",
+              function_backing=EXCLUDED.function_backing, \
+              target_object_types=EXCLUDED.target_object_types, version=om_action_type.version + 1, updated_at=EXCLUDED.updated_at",
             vec![
                 DataValue::String(def.api_name.clone()),
                 DataValue::String(def.display_name.clone()),
@@ -739,7 +760,6 @@ impl OntologyStore for PgOntologyStore {
                 json_or_default(&def.validations, "[]"),
                 json_or_default(&def.side_effects, "[]"),
                 opt_str(&def.function_backing),
-                DataValue::String(enum_to_str(&def.status)),
                 json_arr(&target_object_types),
                 DataValue::DateTime(now),
             ],
@@ -756,7 +776,9 @@ impl OntologyStore for PgOntologyStore {
         let ds = self
             .query(
                 "SELECT api_name, display_name, description, parameters, logic, validations, \
-                 side_effects, function_backing, status FROM om_action_type WHERE api_name = $1",
+                 side_effects, function_backing, status, version, \
+                 deprecation_reason, to_char(sunset_at, 'YYYY-MM-DD') AS sunset_at, replacement_api_name, deprecated_at \
+                 FROM om_action_type WHERE api_name = $1",
                 vec![DataValue::String(api_name.to_string())],
                 "om_action_type_one",
             )
@@ -775,6 +797,8 @@ impl OntologyStore for PgOntologyStore {
             side_effects: get_json(row, s, "side_effects").unwrap_or(Value::Null),
             function_backing: get_opt_string(row, s, "function_backing"),
             status: parse_status(row, s),
+            version: get_i64(row, s, "version") as u32,
+            deprecation: deprecation_from_row(row, s),
         }))
     }
 
@@ -783,7 +807,8 @@ impl OntologyStore for PgOntologyStore {
         // target 为保存期物化列，boot 回填存量，GIN 索引支撑按类型查询）。
         let ds = self
             .query(
-                "SELECT api_name, display_name, status, parameters, target_object_types, updated_at \
+                "SELECT api_name, display_name, status, parameters, target_object_types, updated_at, \
+                 deprecation_reason, to_char(sunset_at, 'YYYY-MM-DD') AS sunset_at, replacement_api_name, deprecated_at \
                  FROM om_action_type ORDER BY updated_at DESC",
                 vec![],
                 "om_action_type_list",
@@ -803,6 +828,7 @@ impl OntologyStore for PgOntologyStore {
                 parameters: get_json(row, s, "parameters").unwrap_or(Value::Null),
                 target_object_types: targets,
                 updated_at: get_opt_ts(row, s, "updated_at"),
+                deprecation: deprecation_from_row(row, s),
             });
         }
         Ok(out)
@@ -822,11 +848,11 @@ impl OntologyStore for PgOntologyStore {
         let now = Utc::now();
         self.exec(
             "INSERT INTO om_function \
-             (api_name, display_name, runtime, kind, inputs, output, body, description, status, created_at, updated_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10) \
+             (api_name, display_name, runtime, kind, inputs, output, body, description, created_at, updated_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9) \
              ON CONFLICT (api_name) DO UPDATE SET display_name=EXCLUDED.display_name, \
               runtime=EXCLUDED.runtime, kind=EXCLUDED.kind, inputs=EXCLUDED.inputs, output=EXCLUDED.output, \
-              body=EXCLUDED.body, description=EXCLUDED.description, status=EXCLUDED.status, updated_at=EXCLUDED.updated_at",
+              body=EXCLUDED.body, description=EXCLUDED.description, version=om_function.version + 1, updated_at=EXCLUDED.updated_at",
             vec![
                 DataValue::String(def.api_name.clone()),
                 DataValue::String(def.display_name.clone()),
@@ -836,7 +862,6 @@ impl OntologyStore for PgOntologyStore {
                 json_or_default(&def.output, "{}"),
                 DataValue::String(def.body.clone()),
                 DataValue::String(def.description.clone()),
-                DataValue::String(enum_to_str(&def.status)),
                 DataValue::DateTime(now),
             ],
         )
@@ -847,7 +872,8 @@ impl OntologyStore for PgOntologyStore {
     async fn get_function(&self, _tenant: &str, api_name: &str) -> StoreResult<Option<FunctionDef>> {
         let ds = self
             .query(
-                "SELECT api_name, display_name, runtime, kind, inputs, output, body, description, status \
+                "SELECT api_name, display_name, runtime, kind, inputs, output, body, description, status, version, \
+                 deprecation_reason, to_char(sunset_at, 'YYYY-MM-DD') AS sunset_at, replacement_api_name, deprecated_at \
                  FROM om_function WHERE api_name = $1",
                 vec![DataValue::String(api_name.to_string())],
                 "om_function_one",
@@ -867,6 +893,8 @@ impl OntologyStore for PgOntologyStore {
             body: get_opt_string(row, s, "body").unwrap_or_default(),
             description: get_opt_string(row, s, "description").unwrap_or_default(),
             status: parse_status(row, s),
+            version: get_i64(row, s, "version") as u32,
+            deprecation: deprecation_from_row(row, s),
         }))
     }
 
@@ -875,7 +903,9 @@ impl OntologyStore for PgOntologyStore {
         // 缺列时前端兜底恒显 query/feel。
         let ds = self
             .query(
-                "SELECT api_name, display_name, runtime, kind, status, updated_at FROM om_function ORDER BY updated_at DESC",
+                "SELECT api_name, display_name, runtime, kind, status, updated_at, \
+                 deprecation_reason, to_char(sunset_at, 'YYYY-MM-DD') AS sunset_at, replacement_api_name, deprecated_at \
+                 FROM om_function ORDER BY updated_at DESC",
                 vec![],
                 "om_function_list",
             )
@@ -945,6 +975,7 @@ pub(crate) fn object_def_from_row(row: &Row, s: &Schema) -> StoreResult<ObjectTy
         datasource: get_opt_json(row, s, "datasource"),
         cmx_origin: get_opt_json(row, s, "cmx_origin"),
         version: get_i64(row, s, "version") as u32,
+        deprecation: deprecation_from_row(row, s),
     })
 }
 
@@ -965,6 +996,7 @@ fn simple_metas(ds: &DataSet) -> Vec<SimpleTypeMeta> {
             runtime: get_opt_string(row, s, "runtime").filter(|x| !x.is_empty()),
             kind: get_opt_string(row, s, "kind").filter(|x| !x.is_empty()),
             status: get_opt_string(row, s, "status").filter(|x| !x.is_empty()),
+            deprecation: deprecation_from_row(row, s),
         });
     }
     out
@@ -988,10 +1020,30 @@ pub(crate) fn parse_status(row: &Row, schema: &Schema) -> TypeStatus {
     str_to_enum(&get_opt_string(row, schema, "status").unwrap_or_default())
 }
 
+/// 弃用元数据四列 → `DeprecationMeta`（任一列缺失/全空 → None；非 deprecated 行四列全 NULL）。
+pub(crate) fn deprecation_from_row(row: &Row, s: &Schema) -> Option<cmx_onto_model::DeprecationMeta> {
+    let reason = get_opt_string(row, s, "deprecation_reason").unwrap_or_default();
+    if reason.is_empty() {
+        return None;
+    }
+    Some(cmx_onto_model::DeprecationMeta {
+        reason,
+        sunset_at: get_opt_string(row, s, "sunset_at").filter(|x| !x.is_empty()),
+        replacement_api_name: get_opt_string(row, s, "replacement_api_name").filter(|x| !x.is_empty()),
+        deprecated_at: get_opt_ts(row, s, "deprecated_at"),
+    })
+}
+
 /// 可序列化对象 → jsonb DataValue（数组/对象通用）。
 fn json_arr<T: Serialize>(v: &T) -> DataValue {
     DataValue::Json(serde_json::to_string(v).unwrap_or_else(|_| "[]".into()))
 }
+
+// —— save_store 跨模块复用的取值/转换包装（pub 薄转发）——
+pub(crate) fn json_arr_pub<T: Serialize>(v: &T) -> DataValue { json_arr(v) }
+pub(crate) fn opt_json_pub(v: &Option<Value>) -> DataValue { opt_json(v) }
+pub(crate) fn opt_str_pub(v: &Option<String>) -> DataValue { opt_str(v) }
+pub(crate) fn json_or_default_pub(v: Value, default: &str) -> DataValue { json_or_default(&v, default) }
 
 /// serde_json::Value → jsonb DataValue；Null 用 default 兜底（列 NOT NULL）。
 pub(crate) fn json_or_default(v: &Value, default: &str) -> DataValue {
@@ -1072,7 +1124,7 @@ impl PgOntologyStore {
     /// 表达式索引，失败仅告警不阻断 save；JoinTable 连接表须已预建，缺表在此明确报错。
     /// 命名统一小写不加引号、超 63 字节截断；**只建不删**——同 (表,属性) 可被多条关系共享，
     /// DROP 会误伤仍在用的关系，残留索引无害（确需清理手工 DROP）。
-    async fn ensure_backing_indexes(&self, def: &LinkTypeDef) -> StoreResult<()> {
+    pub(crate) async fn ensure_backing_indexes(&self, def: &LinkTypeDef) -> StoreResult<()> {
         // 索引名统一小写、截断到 PG 标识符 63 字节上限（防大小写折叠/截断两侧不一致静默空转）。
         fn short_index_name(raw: &str) -> String {
             let mut n: String = raw.chars().map(|c| c.to_ascii_lowercase()).collect();

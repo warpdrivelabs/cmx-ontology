@@ -7,7 +7,7 @@ use crate::engine::store;
 use crate::object_engine::{link_resolver, object_store};
 use crate::resp::{ApiResp, OntoError, Result};
 use crate::tenant::current_tenant;
-use axum::extract::Path;
+use axum::extract::{Path, Query};
 use axum::Json;
 use cmx_onto_model::objectset::{Aggregation, LinkEdge, ObjectRecord, ObjectSet, Page};
 use cmx_onto_model::{LinkBacking, LinkResolver, LinkTypeDef, ObjectStore, OntologyStore};
@@ -180,7 +180,7 @@ pub async fn delete_link(Json(req): Json<LinkReq>) -> Result<Json<ApiResp<Value>
     Ok(Json(ApiResp::ok(json!({ "link": req.link, "deleted": n > 0 }))))
 }
 
-/// 对象集加载请求体：{ objectSet: <代数>, limit?, offset?, subjects? }。
+/// 对象集加载请求体：{ objectSet: <代数>, limit?, offset?, subjects?, view?, include? }。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoadReq {
@@ -193,11 +193,27 @@ pub struct LoadReq {
     /// jwt 模式以令牌为准。空则回退上下文（role:tenant + user）。
     #[serde(default)]
     pub subjects: Vec<String>,
+    /// 场景上下文（§7.3）：terminal 类型 ∈ 场景 objects，否则 409（校验先于 PEP）。
+    #[serde(default)]
+    pub view: Option<String>,
+    /// 状态分层（D9，§5.5）：默认仅 active；非 active 且未 include → 404。
+    #[serde(default)]
+    pub include: Option<String>,
 }
 
 /// POST /object-sets/load —— 编译对象集代数为一条 SQL 并加载（读侧硬门 → 分页 → 列脱敏）。
 pub async fn load_object_set(Json(req): Json<LoadReq>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
+    // 场景 + 状态过滤（§7.3：两校验先于 PEP 权限检查；场景过滤是可见性组织不是权限）。
+    let scope = crate::filter::SceneScope::resolve(&tenant, req.view.as_deref()).await?;
+    let filter = crate::filter::StatusFilter::parse(req.include.as_deref())?;
+    if let Some(scope) = &scope {
+        scope.ensure_set_allowed(&req.object_set)?;
+    }
+    let terminal_for_status = req.object_set.terminal_object_type().unwrap_or("").to_string();
+    if !terminal_for_status.is_empty() {
+        crate::filter::ensure_object_queryable(&tenant, &terminal_for_status, &filter).await?;
+    }
     let subjects = crate::pep::subjects_from(&req.subjects);
     // 读侧硬门：终端类型策略匹配 → 硬拒 / 行残差折入。
     let terminal = req.object_set.terminal_object_type().unwrap_or("").to_string();
@@ -216,7 +232,7 @@ pub async fn load_object_set(Json(req): Json<LoadReq>) -> Result<Json<ApiResp<Va
     Ok(Json(ApiResp::ok(json!(page_out))))
 }
 
-/// 对象集聚合请求体：{ objectSet, aggregation, subjects? }。
+/// 对象集聚合请求体：{ objectSet, aggregation, subjects?, view?, include? }。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AggregateReq {
@@ -224,14 +240,26 @@ pub struct AggregateReq {
     pub aggregation: Aggregation,
     #[serde(default)]
     pub subjects: Vec<String>,
+    #[serde(default)]
+    pub view: Option<String>,
+    #[serde(default)]
+    pub include: Option<String>,
 }
 
 /// POST /object-sets/aggregate —— 对象集聚合（读侧硬门 → Count/GroupCount/GroupSum）。
 /// 硬门把行残差折入后再聚合（受限行不计入统计）；deny / 受控无授权 → 403。
 pub async fn aggregate_object_set(Json(req): Json<AggregateReq>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
-    let subjects = crate::pep::subjects_from(&req.subjects);
+    let scope = crate::filter::SceneScope::resolve(&tenant, req.view.as_deref()).await?;
+    let filter = crate::filter::StatusFilter::parse(req.include.as_deref())?;
+    if let Some(scope) = &scope {
+        scope.ensure_set_allowed(&req.object_set)?;
+    }
     let terminal = req.object_set.terminal_object_type().unwrap_or("").to_string();
+    if !terminal.is_empty() {
+        crate::filter::ensure_object_queryable(&tenant, &terminal, &filter).await?;
+    }
+    let subjects = crate::pep::subjects_from(&req.subjects);
     let (secured_set, _mask) =
         crate::pep::enforce_read(&tenant, &subjects, &terminal, req.object_set.clone()).await?;
     let lr = link_resolver();
@@ -245,10 +273,28 @@ pub async fn aggregate_object_set(Json(req): Json<AggregateReq>) -> Result<Json<
 /// GET /objects/{type}/{pk}/links/{link} —— 便捷 Search-Around：取该对象经 link 的相关对象。
 /// 方向自判：源对象类型在 A 端 → Forward（终端 B），在 B 端 → Reverse（终端 A）；
 /// 自关联（A==B）取 Forward；均不命中报 404。读侧硬门作用在解析出的终端类型上。
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SearchAroundQuery {
+    /// 场景上下文（§7.3）：link 必须 ∈ 场景 links，否则 409。
+    pub view: Option<String>,
+    /// 状态分层（D9）。
+    pub include: Option<String>,
+}
+
 pub async fn search_around(
     Path((object_type, pk, link)): Path<(String, String, String)>,
+    Query(q): Query<SearchAroundQuery>,
 ) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
+    let scope = crate::filter::SceneScope::resolve(&tenant, q.view.as_deref()).await?;
+    let filter = crate::filter::StatusFilter::parse(q.include.as_deref())?;
+    crate::filter::ensure_object_queryable(&tenant, &object_type, &filter).await?;
+    crate::filter::ensure_link_queryable(&tenant, &link, &filter).await?;
+    if let Some(scope) = &scope {
+        scope.ensure_object_member(&object_type)?;
+        scope.ensure_link_member(&link)?;
+    }
     let lr = link_resolver();
     let (direction, terminal) = match lr
         .ends(&tenant, &link)

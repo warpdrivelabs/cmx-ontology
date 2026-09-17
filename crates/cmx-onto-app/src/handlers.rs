@@ -9,8 +9,8 @@ use crate::tenant::{current_display_user, current_tenant};
 use axum::extract::{Path, Query};
 use axum::Json;
 use cmx_onto_model::{
-    ActionTypeDef, FunctionDef, InterfaceDef, LinkBacking, LinkEnd, LinkTypeDef, ObjectTypeDef,
-    OntologyStore, SharedPropertyTypeDef, StoreError,
+    allowed_link_status, ActionTypeDef, FunctionDef, InterfaceDef, LinkBacking, LinkEnd,
+    LinkTypeDef, ObjectTypeDef, OntologyStore, SharedPropertyTypeDef, StoreError, TypeStatus,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -59,26 +59,81 @@ pub async fn get_object_types_batch(
 /// B0 乐观锁：`version > 0` 走原子条件更新（跨标签页/久置缓冲的过期保存得 409）；
 /// `version = 0`（新建 / quickCreate / import）保持既有盲写语义。响应带服务端递增后的
 /// `version`，前端以响应刷新基线。
-pub async fn save_object_type(Json(def): Json<ObjectTypeDef>) -> Result<Json<ApiResp<Value>>> {
+/// save 请求体（raw Value：检测 status / deprecation 旁路携带 → 结构化 warning）。
+/// 状态剥离纪律（方案 §5.2）：七类 save 一律忽略 status / 弃用元数据，变更唯一入口
+/// 是 POST /lifecycle/transition。
+fn stripped_warnings(body: &Value) -> Vec<String> {
+    let mut w = Vec::new();
+    if body.get("status").is_some() {
+        w.push("status 已忽略：状态只能经 POST /lifecycle/transition 变更".to_string());
+    }
+    if body.get("deprecation").is_some() {
+        w.push("deprecation 已忽略：弃用元数据只能经 POST /lifecycle/transition 维护".to_string());
+    }
+    w
+}
+
+pub async fn save_object_type(Json(body): Json<Value>) -> Result<Json<ApiResp<Value>>> {
+    let warnings = stripped_warnings(&body);
+    let def: ObjectTypeDef = serde_json::from_value(body)
+        .map_err(|e| OntoError::bad_request(format!("对象类型请求体非法: {e}")))?;
+    let tenant = current_tenant();
+    let version = save_object_core(&tenant, def, None).await?;
+    Ok(Json(ApiResp::ok(json!({
+        "saved": true, "version": version, "warnings": warnings,
+    }))))
+}
+
+/// 保存对象类型 core（HTTP handler 与 revert 共用；含校验 / active 保护 / 修订管道 / SSE）。
+pub(crate) async fn save_object_core(
+    tenant: &str,
+    def: ObjectTypeDef,
+    change_note: Option<&str>,
+) -> Result<u32> {
     def.validate()
         .map_err(|e| OntoError::business_error(format!("对象类型非法: {e}")))?;
-    let tenant = current_tenant();
-    // 接口强校验（#4）：仅当声明了 implements 才逐个装载接口 + 其要求的共享属性定义，
-    // 交内核纯函数 validate_implements 校验"实现者具备接口要求的共享属性且类型匹配"。
+    // 接口强校验（#4）：仅当声明了 implements 才逐个装载接口 + 其要求的共享属性定义。
     if !def.implements.is_empty() {
-        validate_object_implements(&tenant, &def).await?;
+        validate_object_implements(tenant, &def).await?;
+    }
+    // active 保护（§5.3）：active 资源不可改主键（改 apiName 等价新建不受限）。
+    if def.version > 0
+        && let Some(existing) = store()
+            .get_object_type(tenant, &def.api_name)
+            .await
+            .map_err(|e| OntoError::internal_error(format!("装载对象类型失败: {e}")))?
+        && existing.status == TypeStatus::Active
+        && !existing.primary_key.is_empty()
+        && def.primary_key != existing.primary_key
+    {
+        return Err(OntoError::conflict(
+            "active 资源不可修改主键属性，请先降级到 experimental / deprecated",
+        ));
     }
     let version = store()
-        .upsert_object_type_locked(&tenant, &def)
+        .save_object_with_revision(&def, &changed_by(), change_note)
         .await
         .map_err(|e| match e {
             StoreError::Conflict(m) => OntoError::conflict(m),
             StoreError::NotFound(m) => OntoError::not_found(m),
             other => OntoError::internal_error(format!("保存对象类型失败: {other}")),
         })?;
-    Ok(Json(ApiResp::ok(
-        json!({ "apiName": def.api_name, "saved": true, "version": version }),
-    )))
+    emit_resource_changed(tenant, "object", &def.api_name, "save");
+    Ok(version)
+}
+
+/// 变更人（修订 changed_by；无上下文时 anonymous）。
+pub(crate) fn changed_by() -> String {
+    current_display_user().unwrap_or_else(|| "anonymous".into())
+}
+
+/// SSE resource-changed（方案 §6.5：保存/流转/revert/恢复成功后广播）。
+pub(crate) fn emit_resource_changed(tenant: &str, kind: &str, api_name: &str, action: &str) {
+    crate::events::emit(
+        tenant,
+        "resource-changed",
+        json!({ "kind": kind, "apiName": api_name, "action": action, "by": changed_by() }),
+    );
 }
 
 /// 装载 `def.implements` 涉及的接口与共享属性定义，调用内核 [`validate_implements`]。
@@ -124,12 +179,26 @@ pub async fn validate_object_type(Json(def): Json<ObjectTypeDef>) -> Result<Json
 /// DELETE /object-types/{apiName} —— 删除对象类型。
 /// 安全网：①被引用（关系/动作编辑/场景成员）→ 409 出引用清单；②删除前自动存档（可撤销）。
 pub async fn delete_object_type(Path(api_name): Path<String>) -> Result<Json<ApiResp<Value>>> {
+    let tenant = current_tenant();
+    let existing = store()
+        .get_object_type(&tenant, &api_name)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("装载对象类型失败: {e}")))?
+        .ok_or_else(|| OntoError::not_found(format!("对象类型 {api_name} 不存在")))?;
+    // active 保护（§5.3）：active 资源不可删除。
+    if existing.status == TypeStatus::Active {
+        return Err(OntoError::conflict(
+            "active 资源不可删除，请先降级到 experimental / deprecated",
+        ));
+    }
+    // 结构依赖（D10）：底座内部引用（关系两端 / 动作编辑）409 硬拒；场景引用级联清理。
     let refs = store()
         .object_type_references(&api_name)
         .await
         .map_err(|e| OntoError::internal_error(format!("引用检查失败: {e}")))?;
-    if !refs.is_empty() {
-        let list = refs
+    let structural: Vec<_> = refs.iter().filter(|(k, _)| k != "view").collect();
+    if !structural.is_empty() {
+        let list = structural
             .iter()
             .map(|(k, n)| format!("{k}:{n}"))
             .collect::<Vec<_>>()
@@ -138,14 +207,29 @@ pub async fn delete_object_type(Path(api_name): Path<String>) -> Result<Json<Api
             "对象类型 {api_name} 仍被引用（{list}），请先清理引用或改用「废弃」"
         )));
     }
+    let scene_refs = store()
+        .view_refs_of_object(&api_name)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("场景引用检查失败: {e}")))?;
     // 删除前自动存档（顺序钉死：引用检查通过后才存档，避免被拒删除留噪音快照）。
     auto_snapshot_before("删除对象类型", &api_name).await;
-    let tenant = current_tenant();
+    // 场景级联清理（单事务；每受影响场景一条修订）。
+    let affected_scenes = store()
+        .cascade_cleanup_scene_refs(Some(&api_name), None, &changed_by())
+        .await
+        .map_err(|e| OntoError::internal_error(format!("级联清理场景引用失败: {e}")))?;
+    let _ = &scene_refs;
     let n = store()
-        .delete_object_type(&tenant, &api_name)
+        .delete_with_revision("object", &api_name, &changed_by(), Some("删除对象类型"))
         .await
         .map_err(|e| OntoError::internal_error(format!("删除对象类型失败: {e}")))?;
-    Ok(Json(ApiResp::ok(json!({ "apiName": api_name, "deleted": n > 0 }))))
+    emit_resource_changed(&tenant, "object", &api_name, "delete");
+    Ok(Json(ApiResp::ok(json!({
+        "apiName": api_name,
+        "deleted": n > 0,
+        "sceneRefs": scene_refs.iter().map(|(a, d)| json!({"apiName": a, "displayName": d})).collect::<Vec<_>>(),
+        "affectedScenes": affected_scenes,
+    }))))
 }
 
 /// 高危删除前置自动存档：失败仅记日志不阻断删除（存档是兜底而非门槛；live 未变，不发事件）。
@@ -195,17 +279,68 @@ fn log_backing_fk_gaps(api_name: &str, backing: &Value) {
     }
 }
 
-pub async fn save_link_type(Json(def): Json<LinkTypeDef>) -> Result<Json<ApiResp<Value>>> {
+pub async fn save_link_type(Json(body): Json<Value>) -> Result<Json<ApiResp<Value>>> {
+    let warnings = stripped_warnings(&body);
+    let def: LinkTypeDef = serde_json::from_value(body)
+        .map_err(|e| OntoError::bad_request(format!("关系类型请求体非法: {e}")))?;
+    let tenant = current_tenant();
+    let version = save_link_core(&tenant, def, None).await?;
+    Ok(Json(ApiResp::ok(json!({ "saved": true, "version": version, "warnings": warnings }))))
+}
+
+/// 保存关系类型 core（handler 与 revert 共用；矩阵校验作用点 1，方案 §5.4）。
+pub(crate) async fn save_link_core(
+    tenant: &str,
+    def: LinkTypeDef,
+    change_note: Option<&str>,
+) -> Result<u32> {
     def.validate()
         .map_err(|e| OntoError::business_error(format!("关系类型非法: {e}")))?;
     log_backing_fk_gaps(&def.api_name, &def.backing);
-    let tenant = current_tenant();
-    ensure_backing_references(&tenant, &def).await?;
-    store()
-        .upsert_link_type(&tenant, &def)
+    ensure_backing_references(tenant, &def).await?;
+    // 兼容矩阵（作用点 1）：新建时任一端对象 deprecated → 409（默认 experimental 违反矩阵
+    // 且 transition 前资源须先存在，无法事后补救——N14）；修改两端 → 校验 live 状态仍合规。
+    let sa = store()
+        .get_status("object", &def.object_type_a)
         .await
-        .map_err(|e| OntoError::internal_error(format!("保存关系类型失败: {e}")))?;
-    Ok(Json(ApiResp::ok(json!({ "apiName": def.api_name, "saved": true }))))
+        .map_err(|e| OntoError::internal_error(format!("装载对象状态失败: {e}")))?;
+    let sb = store()
+        .get_status("object", &def.object_type_b)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("装载对象状态失败: {e}")))?;
+    let is_new = store()
+        .get_status("link", &def.api_name)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("装载关系状态失败: {e}")))?
+        .is_none();
+    if is_new && (sa == Some(TypeStatus::Deprecated) || sb == Some(TypeStatus::Deprecated)) {
+        return Err(OntoError::conflict(
+            "对象已废弃，不可新建关系（兼容矩阵：deprecated 对象端仅允许 deprecated 关系）",
+        ));
+    }
+    if !is_new {
+        let cur = store()
+            .get_status("link", &def.api_name)
+            .await
+            .map_err(|e| OntoError::internal_error(format!("装载关系状态失败: {e}")))?
+            .unwrap_or_default();
+        let allowed = allowed_link_status(sa.unwrap_or_default(), sb.unwrap_or_default());
+        if !allowed.contains(&cur) {
+            return Err(OntoError::conflict(format!(
+                "兼容矩阵不允许关系当前状态 {cur:?}（两端对象状态 {sa:?}/{sb:?} 仅允许 {allowed:?}）——请先调整对象状态或废弃该关系"
+            )));
+        }
+    }
+    let version = store()
+        .save_link_with_revision(&def, &changed_by(), change_note)
+        .await
+        .map_err(|e| match e {
+            StoreError::Conflict(m) => OntoError::conflict(m),
+            StoreError::NotFound(m) => OntoError::not_found(m),
+            other => OntoError::internal_error(format!("保存关系类型失败: {other}")),
+        })?;
+    emit_resource_changed(tenant, "link", &def.api_name, "save");
+    Ok(version)
 }
 
 /// save 跨端校验（定义层 validate 拿不到属性注册表，这里 async 补齐）：
@@ -271,11 +406,38 @@ async fn ensure_object_registered(tenant: &str, api_name: &str, label: &str) -> 
 
 pub async fn delete_link_type(Path(api_name): Path<String>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
+    let existing = store()
+        .get_status("link", &api_name)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("装载关系类型失败: {e}")))?;
+    let Some(status) = existing else {
+        return Err(OntoError::not_found(format!("关系类型 {api_name} 不存在")));
+    };
+    if status == TypeStatus::Active {
+        return Err(OntoError::conflict(
+            "active 资源不可删除，请先降级到 experimental / deprecated",
+        ));
+    }
+    let scene_refs = store()
+        .view_refs_of_link(&api_name)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("场景引用检查失败: {e}")))?;
+    auto_snapshot_before("删除关系类型", &api_name).await;
+    let affected_scenes = store()
+        .cascade_cleanup_scene_refs(None, Some(&api_name), &changed_by())
+        .await
+        .map_err(|e| OntoError::internal_error(format!("级联清理场景引用失败: {e}")))?;
     let n = store()
-        .delete_link_type(&tenant, &api_name)
+        .delete_with_revision("link", &api_name, &changed_by(), Some("删除关系类型"))
         .await
         .map_err(|e| OntoError::internal_error(format!("删除关系类型失败: {e}")))?;
-    Ok(Json(ApiResp::ok(json!({ "apiName": api_name, "deleted": n > 0 }))))
+    emit_resource_changed(&tenant, "link", &api_name, "delete");
+    Ok(Json(ApiResp::ok(json!({
+        "apiName": api_name,
+        "deleted": n > 0,
+        "sceneRefs": scene_refs.iter().map(|(a, d)| json!({"apiName": a, "displayName": d})).collect::<Vec<_>>(),
+        "affectedScenes": affected_scenes,
+    }))))
 }
 
 // ───────────────────────────── 接口 ─────────────────────────────
@@ -329,24 +491,65 @@ pub async fn get_interface(Path(api_name): Path<String>) -> Result<Json<ApiResp<
     Ok(Json(ApiResp::ok(json!(def))))
 }
 
-pub async fn save_interface(Json(def): Json<InterfaceDef>) -> Result<Json<ApiResp<Value>>> {
+pub async fn save_interface(Json(body): Json<Value>) -> Result<Json<ApiResp<Value>>> {
+    let warnings = stripped_warnings(&body);
+    let def: InterfaceDef = serde_json::from_value(body)
+        .map_err(|e| OntoError::bad_request(format!("接口请求体非法: {e}")))?;
+    let tenant = current_tenant();
+    let version = save_interface_core(&tenant, def, None).await?;
+    Ok(Json(ApiResp::ok(json!({ "saved": true, "version": version, "warnings": warnings }))))
+}
+
+pub(crate) async fn save_interface_core(
+    tenant: &str,
+    def: InterfaceDef,
+    change_note: Option<&str>,
+) -> Result<u32> {
     def.validate()
         .map_err(|e| OntoError::business_error(format!("接口非法: {e}")))?;
-    let tenant = current_tenant();
-    store()
-        .upsert_interface(&tenant, &def)
+    let version = store()
+        .save_interface_with_revision(&def, &changed_by(), change_note)
         .await
-        .map_err(|e| OntoError::internal_error(format!("保存接口失败: {e}")))?;
-    Ok(Json(ApiResp::ok(json!({ "apiName": def.api_name, "saved": true }))))
+        .map_err(|e| match e {
+            StoreError::Conflict(m) => OntoError::conflict(m),
+            StoreError::NotFound(m) => OntoError::not_found(m),
+            other => OntoError::internal_error(format!("保存接口失败: {other}")),
+        })?;
+    emit_resource_changed(tenant, "interface", &def.api_name, "save");
+    Ok(version)
 }
 
 pub async fn delete_interface(Path(api_name): Path<String>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
+    ensure_deletable("interface", &api_name).await?;
+    auto_snapshot_before("删除接口", &api_name).await;
     let n = store()
         .delete_interface(&tenant, &api_name)
         .await
         .map_err(|e| OntoError::internal_error(format!("删除接口失败: {e}")))?;
+    if n > 0 {
+        store()
+            .delete_with_revision("interface", &api_name, &changed_by(), Some("删除接口"))
+            .await
+            .map_err(|e| OntoError::internal_error(format!("接口墓碑修订失败: {e}")))?;
+        emit_resource_changed(&tenant, "interface", &api_name, "delete");
+    }
     Ok(Json(ApiResp::ok(json!({ "apiName": api_name, "deleted": n > 0 }))))
+}
+
+/// active 保护（§5.3）：active 资源不可删除（七类通用；对象/关系删除走带场景级联的重载流程）。
+async fn ensure_deletable(kind: &str, api_name: &str) -> Result<()> {
+    let status = store()
+        .get_status(kind, api_name)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("装载资源状态失败: {e}")))?
+        .ok_or_else(|| OntoError::not_found(format!("{kind} {api_name} 不存在")))?;
+    if status == TypeStatus::Active {
+        return Err(OntoError::conflict(
+            "active 资源不可删除，请先降级到 experimental / deprecated",
+        ));
+    }
+    Ok(())
 }
 
 // ─────────────────────── 共享属性类型 ───────────────────────
@@ -403,22 +606,38 @@ pub async fn get_shared_property(Path(api_name): Path<String>) -> Result<Json<Ap
     Ok(Json(ApiResp::ok(json!(def))))
 }
 
-pub async fn save_shared_property(
-    Json(def): Json<SharedPropertyTypeDef>,
-) -> Result<Json<ApiResp<Value>>> {
+pub async fn save_shared_property(Json(body): Json<Value>) -> Result<Json<ApiResp<Value>>> {
+    let warnings = stripped_warnings(&body);
+    let def: SharedPropertyTypeDef = serde_json::from_value(body)
+        .map_err(|e| OntoError::bad_request(format!("共享属性请求体非法: {e}")))?;
+    let tenant = current_tenant();
+    let version = save_shared_core(&tenant, def, None).await?;
+    Ok(Json(ApiResp::ok(json!({ "saved": true, "version": version, "warnings": warnings }))))
+}
+
+pub(crate) async fn save_shared_core(
+    tenant: &str,
+    def: SharedPropertyTypeDef,
+    change_note: Option<&str>,
+) -> Result<u32> {
     def.validate()
         .map_err(|e| OntoError::business_error(format!("共享属性非法: {e}")))?;
-    let tenant = current_tenant();
-    store()
-        .upsert_shared_property(&tenant, &def)
+    let version = store()
+        .save_shared_with_revision(&def, &changed_by(), change_note)
         .await
-        .map_err(|e| OntoError::internal_error(format!("保存共享属性失败: {e}")))?;
-    Ok(Json(ApiResp::ok(json!({ "apiName": def.api_name, "saved": true }))))
+        .map_err(|e| match e {
+            StoreError::Conflict(m) => OntoError::conflict(m),
+            StoreError::NotFound(m) => OntoError::not_found(m),
+            other => OntoError::internal_error(format!("保存共享属性失败: {other}")),
+        })?;
+    emit_resource_changed(tenant, "shared_property", &def.api_name, "save");
+    Ok(version)
 }
 
 /// DELETE /shared-properties/{apiName} —— 删除共享属性。
 /// 安全网：①被引用（对象属性/接口契约）→ 409 出引用清单；②删除前自动存档（可撤销）。
 pub async fn delete_shared_property(Path(api_name): Path<String>) -> Result<Json<ApiResp<Value>>> {
+    ensure_deletable("shared_property", &api_name).await?;
     let refs = store()
         .shared_property_references(&api_name)
         .await
@@ -439,6 +658,13 @@ pub async fn delete_shared_property(Path(api_name): Path<String>) -> Result<Json
         .delete_shared_property(&tenant, &api_name)
         .await
         .map_err(|e| OntoError::internal_error(format!("删除共享属性失败: {e}")))?;
+    if n > 0 {
+        store()
+            .delete_with_revision("shared_property", &api_name, &changed_by(), Some("删除共享属性"))
+            .await
+            .map_err(|e| OntoError::internal_error(format!("共享属性墓碑修订失败: {e}")))?;
+        emit_resource_changed(&tenant, "shared_property", &api_name, "delete");
+    }
     Ok(Json(ApiResp::ok(json!({ "apiName": api_name, "deleted": n > 0 }))))
 }
 
@@ -463,7 +689,10 @@ pub async fn get_action_type(Path(api_name): Path<String>) -> Result<Json<ApiRes
     Ok(Json(ApiResp::ok(json!(def))))
 }
 
-pub async fn save_action_type(Json(mut def): Json<ActionTypeDef>) -> Result<Json<ApiResp<Value>>> {
+pub async fn save_action_type(Json(body): Json<Value>) -> Result<Json<ApiResp<Value>>> {
+    let warnings = stripped_warnings(&body);
+    let mut def: ActionTypeDef = serde_json::from_value(body)
+        .map_err(|e| OntoError::bad_request(format!("动作类型请求体非法: {e}")))?;
     def.validate()
         .map_err(|e| OntoError::business_error(format!("动作类型非法: {e}")))?;
     // 保存期校验（P0）：函数背书与 logic/side_effects 互斥；defaultValue 满足 multipleChoice。
@@ -502,24 +731,45 @@ pub async fn save_action_type(Json(mut def): Json<ActionTypeDef>) -> Result<Json
     }
     // P2-0：派生作用对象类型并物化落列（语义真源仍是 parameters/logic；清单查询用）。
     let targets = cmx_onto_model::derive_target_object_types(&def.parameters, &def.logic);
-    store()
-        .upsert_action_type(&tenant, &def, &targets)
-        .await
-        .map_err(|e| OntoError::internal_error(format!("保存动作类型失败: {e}")))?;
+    let version = save_action_core(&tenant, def, &targets, None).await?;
     Ok(Json(ApiResp::ok(json!({
-        "apiName": def.api_name,
         "saved": true,
+        "version": version,
         "derivedParams": derived,
         "targetObjectTypes": targets,
+        "warnings": warnings,
     }))))
+}
+
+pub(crate) async fn save_action_core(
+    tenant: &str,
+    def: ActionTypeDef,
+    targets: &[String],
+    change_note: Option<&str>,
+) -> Result<u32> {
+    let version = store()
+        .save_action_with_revision(&def, targets, &changed_by(), change_note)
+        .await
+        .map_err(|e| match e {
+            StoreError::Conflict(m) => OntoError::conflict(m),
+            StoreError::NotFound(m) => OntoError::not_found(m),
+            other => OntoError::internal_error(format!("保存动作类型失败: {other}")),
+        })?;
+    emit_resource_changed(tenant, "action", &def.api_name, "save");
+    Ok(version)
 }
 
 pub async fn delete_action_type(Path(api_name): Path<String>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
+    ensure_deletable("action", &api_name).await?;
+    auto_snapshot_before("删除动作类型", &api_name).await;
     let n = store()
-        .delete_action_type(&tenant, &api_name)
+        .delete_with_revision("action", &api_name, &changed_by(), Some("删除动作类型"))
         .await
         .map_err(|e| OntoError::internal_error(format!("删除动作类型失败: {e}")))?;
+    if n > 0 {
+        emit_resource_changed(&tenant, "action", &api_name, "delete");
+    }
     Ok(Json(ApiResp::ok(json!({ "apiName": api_name, "deleted": n > 0 }))))
 }
 
@@ -544,23 +794,45 @@ pub async fn get_function(Path(api_name): Path<String>) -> Result<Json<ApiResp<V
     Ok(Json(ApiResp::ok(json!(def))))
 }
 
-pub async fn save_function(Json(def): Json<FunctionDef>) -> Result<Json<ApiResp<Value>>> {
+pub async fn save_function(Json(body): Json<Value>) -> Result<Json<ApiResp<Value>>> {
+    let warnings = stripped_warnings(&body);
+    let def: FunctionDef = serde_json::from_value(body)
+        .map_err(|e| OntoError::bad_request(format!("函数请求体非法: {e}")))?;
+    let tenant = current_tenant();
+    let version = save_function_core(&tenant, def, None).await?;
+    Ok(Json(ApiResp::ok(json!({ "saved": true, "version": version, "warnings": warnings }))))
+}
+
+pub(crate) async fn save_function_core(
+    tenant: &str,
+    def: FunctionDef,
+    change_note: Option<&str>,
+) -> Result<u32> {
     def.validate()
         .map_err(|e| OntoError::business_error(format!("函数非法: {e}")))?;
-    let tenant = current_tenant();
-    store()
-        .upsert_function(&tenant, &def)
+    let version = store()
+        .save_function_with_revision(&def, &changed_by(), change_note)
         .await
-        .map_err(|e| OntoError::internal_error(format!("保存函数失败: {e}")))?;
-    Ok(Json(ApiResp::ok(json!({ "apiName": def.api_name, "saved": true }))))
+        .map_err(|e| match e {
+            StoreError::Conflict(m) => OntoError::conflict(m),
+            StoreError::NotFound(m) => OntoError::not_found(m),
+            other => OntoError::internal_error(format!("保存函数失败: {other}")),
+        })?;
+    emit_resource_changed(tenant, "function", &def.api_name, "save");
+    Ok(version)
 }
 
 pub async fn delete_function(Path(api_name): Path<String>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
+    ensure_deletable("function", &api_name).await?;
+    auto_snapshot_before("删除函数", &api_name).await;
     let n = store()
-        .delete_function(&tenant, &api_name)
+        .delete_with_revision("function", &api_name, &changed_by(), Some("删除函数"))
         .await
         .map_err(|e| OntoError::internal_error(format!("删除函数失败: {e}")))?;
+    if n > 0 {
+        emit_resource_changed(&tenant, "function", &api_name, "delete");
+    }
     Ok(Json(ApiResp::ok(json!({ "apiName": api_name, "deleted": n > 0 }))))
 }
 
@@ -574,6 +846,10 @@ pub struct ManifestQuery {
     /// actionTypes/functions，大小写不敏感，亦接受 object/link/... 简写）。
     /// 不传 = 全量六类；传了 = 仅装载指定类型（轻量消费方按需取数）。
     pub types: Option<String>,
+    /// 状态分层过滤（D9，§5.5）：默认仅 active；逗号分隔 experimental/deprecated 或 all。
+    pub include: Option<String>,
+    /// 场景上下文（§7.3 六段口径）：成员按场景过滤；类型非成员 → 从清单消失。
+    pub view: Option<String>,
 }
 
 /// kind 简写 → 清单键名归一。
@@ -589,17 +865,20 @@ fn normalize_manifest_type(raw: &str) -> Option<&'static str> {
     }
 }
 
-/// GET /manifest —— 本体全量清单（六类元素的列表）；`?types=` 支持按类型子集装载。
+/// GET /manifest —— 本体全量清单；`?types=` 按类型子集；`?include=` 状态分层（D9）；
+/// `?view=` 场景六段口径（§7.3：成员类型 / 场景内关系 / 派生动作函数 / 派生共享属性）。
 pub async fn manifest(Query(q): Query<ManifestQuery>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
-    match &q.types {
-        None => {
-            let m = store()
+    let filter = crate::filter::StatusFilter::parse(q.include.as_deref())?;
+    let scope = crate::filter::SceneScope::resolve(&tenant, q.view.as_deref()).await?;
+    let mut m: Value = match &q.types {
+        None => serde_json::to_value(
+            store()
                 .manifest(&tenant)
                 .await
-                .map_err(|e| OntoError::internal_error(format!("装载清单失败: {e}")))?;
-            Ok(Json(ApiResp::ok(json!(m))))
-        }
+                .map_err(|e| OntoError::internal_error(format!("装载清单失败: {e}")))?,
+        )
+        .unwrap_or(Value::Null),
         Some(types) => {
             let mut kinds = Vec::new();
             for raw in types.split(',') {
@@ -615,12 +894,113 @@ pub async fn manifest(Query(q): Query<ManifestQuery>) -> Result<Json<ApiResp<Val
             if kinds.is_empty() {
                 return Err(OntoError::bad_request("types 参数为空"));
             }
-            let m = store()
+            store()
                 .manifest_filtered(&tenant, &kinds)
                 .await
-                .map_err(|e| OntoError::internal_error(format!("装载清单失败: {e}")))?;
-            Ok(Json(ApiResp::ok(json!(m))))
+                .map_err(|e| OntoError::internal_error(format!("装载清单失败: {e}")))?
         }
+    };
+    filter_manifest(&mut m, &filter, scope.as_ref());
+    Ok(Json(ApiResp::ok(m)))
+}
+
+/// 清单状态分层 + 场景六段口径过滤（§5.5 / §7.3；handler 层实现不下沉 store）。
+fn filter_manifest(m: &mut Value, filter: &crate::filter::StatusFilter, scope: Option<&crate::filter::SceneScope>) {
+    let Some(obj) = m.as_object_mut() else { return };
+    // 1) 状态过滤（六段统一）。
+    if let Some(arr) = obj.get_mut("objectTypes").and_then(|v| v.as_array_mut()) {
+        arr.retain(|t| {
+            t.get("status").and_then(|s| s.as_str()).map(|s| filter.allow_str(s)).unwrap_or(true)
+        });
+    }
+    if let Some(arr) = obj.get_mut("linkTypes").and_then(|v| v.as_array_mut()) {
+        arr.retain(|t| {
+            t.get("status").and_then(|s| s.as_str()).map(|s| filter.allow_str(s)).unwrap_or(true)
+        });
+    }
+    for seg in ["interfaces", "sharedProperties", "functions"] {
+        if let Some(arr) = obj.get_mut(seg).and_then(|v| v.as_array_mut()) {
+            arr.retain(|t| {
+                t.get("status").and_then(|s| s.as_str()).map(|s| filter.allow_str(s)).unwrap_or(true)
+            });
+        }
+    }
+    if let Some(arr) = obj.get_mut("actionTypes").and_then(|v| v.as_array_mut()) {
+        arr.retain(|t| {
+            t.get("status").and_then(|s| s.as_str()).map(|s| filter.allow_str(s)).unwrap_or(true)
+        });
+    }
+    // 2) 场景六段口径（scope 在状态过滤后取交集——场景不能豁免状态口径）。
+    let Some(scope) = scope else { return };
+    if let Some(arr) = obj.get_mut("objectTypes").and_then(|v| v.as_array_mut()) {
+        arr.retain(|t| {
+            t.get("apiName").and_then(|n| n.as_str()).map(|n| scope.objects.contains(n)).unwrap_or(false)
+        });
+    }
+    if let Some(arr) = obj.get_mut("linkTypes").and_then(|v| v.as_array_mut()) {
+        arr.retain(|t| {
+            let name = t.get("apiName").and_then(|n| n.as_str()).unwrap_or("");
+            match &scope.links {
+                Some(links) => links.contains(name),
+                None => {
+                    // auto 视图：links 现算 = 两端在场（等价现状推导）。
+                    let a = t.get("objectTypeA").and_then(|n| n.as_str()).unwrap_or("");
+                    let b = t.get("objectTypeB").and_then(|n| n.as_str()).unwrap_or("");
+                    scope.objects.contains(a) && scope.objects.contains(b)
+                }
+            }
+        });
+    }
+    // interfaces = 成员对象 implements 并集 ∪（graph 对齐口径；members.interfaces 前端已知）。
+    let implemented: std::collections::BTreeSet<String> = obj
+        .get("objectTypes")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .flat_map(|t| {
+                    t.get("implements").and_then(|x| x.as_array()).cloned().unwrap_or_default().into_iter()
+                })
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(arr) = obj.get_mut("interfaces").and_then(|v| v.as_array_mut()) {
+        arr.retain(|t| {
+            t.get("apiName").and_then(|n| n.as_str()).map(|n| implemented.contains(n)).unwrap_or(false)
+        });
+    }
+    // sharedProperties = 成员对象属性引用派生。
+    let referenced: std::collections::BTreeSet<String> = obj
+        .get("objectTypes")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .flat_map(|t| {
+                    t.get("properties").and_then(|x| x.as_array()).cloned().unwrap_or_default().into_iter()
+                })
+                .filter_map(|p| p.get("sharedProperty").and_then(|s| s.as_str()).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(arr) = obj.get_mut("sharedProperties").and_then(|v| v.as_array_mut()) {
+        arr.retain(|t| {
+            t.get("apiName").and_then(|n| n.as_str()).map(|n| referenced.contains(n)).unwrap_or(false)
+        });
+    }
+    // actionTypes = 成员对象派生（targetObjectTypes ∩ 成员非空）。
+    if let Some(arr) = obj.get_mut("actionTypes").and_then(|v| v.as_array_mut()) {
+        arr.retain(|t| {
+            t.get("targetObjectTypes")
+                .and_then(|x| x.as_array())
+                .map(|ts| {
+                    ts.iter().filter_map(|x| x.as_str()).any(|x| scope.objects.contains(x))
+                })
+                .unwrap_or(false)
+        });
+    }
+    // functions：无对象派生关系 → 空数组（§7.3 口径）。
+    if let Some(arr) = obj.get_mut("functions").and_then(|v| v.as_array_mut()) {
+        arr.clear();
     }
 }
 

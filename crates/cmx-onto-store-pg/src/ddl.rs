@@ -94,15 +94,33 @@ pub const DDL_STATEMENTS: &[&str] = &[
         updated_at      TIMESTAMPTZ  NOT NULL
     )"#,
     // —— 存档快照（不可变检查点；version 唯一；rev = 内容指纹去重锚；snapshot = 存档时全量清单+定义）——
+    // 列名 archived_by/archived_at（方案 20260917 §6.5 命名清理：存档≠发布；旧库由下方 DO 块判存改名）。
     r#"CREATE TABLE IF NOT EXISTS om_version (
         version         INTEGER      PRIMARY KEY,
         rev             VARCHAR(32)  NOT NULL,
         summary         TEXT         NOT NULL DEFAULT '',
         snapshot        JSONB        NOT NULL,
-        published_by    VARCHAR(128),
-        published_at    TIMESTAMPTZ  NOT NULL
+        archived_by     VARCHAR(128),
+        archived_at     TIMESTAMPTZ  NOT NULL,
+        tag             VARCHAR(64),
+        release_note    TEXT
     )"#,
-    "CREATE INDEX IF NOT EXISTS idx_om_version_published ON om_version (published_at)",
+    "CREATE INDEX IF NOT EXISTS idx_om_version_archived ON om_version (archived_at)",
+    // —— 资源级修订历史（方案 20260917 §6.2；七类资源每次保存/流转/恢复同事务追加一条；
+    //     deleted 墓碑：资源删除后历史保留可恢复；view 剥离 layout）——
+    r#"CREATE TABLE IF NOT EXISTS om_revision (
+        id            BIGSERIAL PRIMARY KEY,
+        resource_kind VARCHAR(32)  NOT NULL,
+        api_name      VARCHAR(128) NOT NULL,
+        revision      INTEGER      NOT NULL,
+        payload       JSONB        NOT NULL,
+        change_note   TEXT,
+        changed_by    VARCHAR(255) NOT NULL,
+        changed_at    TIMESTAMPTZ  NOT NULL DEFAULT now(),
+        deleted       BOOLEAN      NOT NULL DEFAULT FALSE,
+        UNIQUE (resource_kind, api_name, revision)
+    )"#,
+    "CREATE INDEX IF NOT EXISTS idx_om_revision_resource ON om_revision (resource_kind, api_name, revision DESC)",
     // —— O4 动作执行审计（每次动作执行落一行；含参数/编辑/结果/dry-run）——
     r#"CREATE TABLE IF NOT EXISTS oe_action_log (
         id              BIGSERIAL    PRIMARY KEY,
@@ -197,6 +215,68 @@ pub const DDL_STATEMENTS: &[&str] = &[
         updated_at      TIMESTAMPTZ  NOT NULL
     )"#,
     "CREATE INDEX IF NOT EXISTS idx_om_view_source ON om_view (source)",
+    // —— 方案 20260917（P1 状态软治理 / P2 修订历史）：幂等补列（既有库自动迁移）——
+    // 七类资源弃用元数据四列（仅 /lifecycle/transition 写入；save 剥离；离开 deprecated 即清空）。
+    "ALTER TABLE om_object_type ADD COLUMN IF NOT EXISTS deprecation_reason TEXT",
+    "ALTER TABLE om_object_type ADD COLUMN IF NOT EXISTS sunset_at DATE",
+    "ALTER TABLE om_object_type ADD COLUMN IF NOT EXISTS replacement_api_name VARCHAR(128)",
+    "ALTER TABLE om_object_type ADD COLUMN IF NOT EXISTS deprecated_at TIMESTAMPTZ",
+    "ALTER TABLE om_link_type ADD COLUMN IF NOT EXISTS deprecation_reason TEXT",
+    "ALTER TABLE om_link_type ADD COLUMN IF NOT EXISTS sunset_at DATE",
+    "ALTER TABLE om_link_type ADD COLUMN IF NOT EXISTS replacement_api_name VARCHAR(128)",
+    "ALTER TABLE om_link_type ADD COLUMN IF NOT EXISTS deprecated_at TIMESTAMPTZ",
+    "ALTER TABLE om_interface ADD COLUMN IF NOT EXISTS deprecation_reason TEXT",
+    "ALTER TABLE om_interface ADD COLUMN IF NOT EXISTS sunset_at DATE",
+    "ALTER TABLE om_interface ADD COLUMN IF NOT EXISTS replacement_api_name VARCHAR(128)",
+    "ALTER TABLE om_interface ADD COLUMN IF NOT EXISTS deprecated_at TIMESTAMPTZ",
+    "ALTER TABLE om_shared_property ADD COLUMN IF NOT EXISTS deprecation_reason TEXT",
+    "ALTER TABLE om_shared_property ADD COLUMN IF NOT EXISTS sunset_at DATE",
+    "ALTER TABLE om_shared_property ADD COLUMN IF NOT EXISTS replacement_api_name VARCHAR(128)",
+    "ALTER TABLE om_shared_property ADD COLUMN IF NOT EXISTS deprecated_at TIMESTAMPTZ",
+    "ALTER TABLE om_action_type ADD COLUMN IF NOT EXISTS deprecation_reason TEXT",
+    "ALTER TABLE om_action_type ADD COLUMN IF NOT EXISTS sunset_at DATE",
+    "ALTER TABLE om_action_type ADD COLUMN IF NOT EXISTS replacement_api_name VARCHAR(128)",
+    "ALTER TABLE om_action_type ADD COLUMN IF NOT EXISTS deprecated_at TIMESTAMPTZ",
+    "ALTER TABLE om_function ADD COLUMN IF NOT EXISTS deprecation_reason TEXT",
+    "ALTER TABLE om_function ADD COLUMN IF NOT EXISTS sunset_at DATE",
+    "ALTER TABLE om_function ADD COLUMN IF NOT EXISTS replacement_api_name VARCHAR(128)",
+    "ALTER TABLE om_function ADD COLUMN IF NOT EXISTS deprecated_at TIMESTAMPTZ",
+    "ALTER TABLE om_view ADD COLUMN IF NOT EXISTS deprecation_reason TEXT",
+    "ALTER TABLE om_view ADD COLUMN IF NOT EXISTS sunset_at DATE",
+    "ALTER TABLE om_view ADD COLUMN IF NOT EXISTS replacement_api_name VARCHAR(128)",
+    "ALTER TABLE om_view ADD COLUMN IF NOT EXISTS deprecated_at TIMESTAMPTZ",
+    // 状态覆盖七类：shared_property / view 原本无 status 列（其余五类建表自带）。
+    "ALTER TABLE om_shared_property ADD COLUMN IF NOT EXISTS status VARCHAR(32) NOT NULL DEFAULT 'experimental'",
+    "ALTER TABLE om_view ADD COLUMN IF NOT EXISTS status VARCHAR(32) NOT NULL DEFAULT 'experimental'",
+    // 乐观锁补齐（§6.2 顺手清债）：link / interface / shared_property / action / function 对齐 object/view。
+    "ALTER TABLE om_link_type ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE om_interface ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE om_shared_property ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE om_action_type ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE om_function ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 0",
+    // om_version 旧列名改存档语义（RENAME 不可幂等重放——DO 块判存；索引同步改名）。
+    r#"DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'om_version' AND column_name = 'published_by')
+           AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'om_version' AND column_name = 'archived_by') THEN
+            ALTER TABLE om_version RENAME COLUMN published_by TO archived_by;
+        END IF; END $$"#,
+    r#"DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'om_version' AND column_name = 'published_at')
+           AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'om_version' AND column_name = 'archived_at') THEN
+            ALTER TABLE om_version RENAME COLUMN published_at TO archived_at;
+        END IF; END $$"#,
+    r#"DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_om_version_published')
+           AND NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_om_version_archived') THEN
+            ALTER INDEX idx_om_version_published RENAME TO idx_om_version_archived;
+        END IF; END $$"#,
+    // 发布标记（方案 §6.4）：tag 唯一（PG 唯一约束允许多行 NULL——匿名检查点不占位）。
+    "ALTER TABLE om_version ADD COLUMN IF NOT EXISTS tag VARCHAR(64)",
+    "ALTER TABLE om_version ADD COLUMN IF NOT EXISTS release_note TEXT",
+    r#"DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_om_version_tag') THEN
+            ALTER TABLE om_version ADD CONSTRAINT uq_om_version_tag UNIQUE (tag);
+        END IF; END $$"#,
     // （om_draft 草稿工作区表已随直改 live 架构移除——存量库由下方 DDL_CLEANUPS 幂等清理）
     // —— 维护角色白名单（P2 写路径授权；方案 §七——不复用 om_policy（行级 PDP 语义错位））——
     // **空白名单 = 开放**（P1 全员维护等效语义；生产由 DBA 录入行即收敛为白名单模式）。
@@ -291,13 +371,62 @@ pub const DDL_COMMENTS: &[&str] = &[
     "COMMENT ON COLUMN om_function.created_at IS '创建时间'",
     "COMMENT ON COLUMN om_function.updated_at IS '最近更新时间'",
     // —— 发布快照 ——
-    "COMMENT ON TABLE om_version IS '本体存档快照（不可变检查点；每次存档/回滚留痕一行，承载存档时全量清单+定义，可整体回滚）'",
+    "COMMENT ON TABLE om_version IS '本体存档快照（不可变检查点；每次存档/回滚留痕一行，承载存档时全量清单+定义，可整体回滚）；tag 非空即命名发布标记'",
     "COMMENT ON COLUMN om_version.version IS '存档版本号（递增主键，唯一）'",
     "COMMENT ON COLUMN om_version.rev IS '内容指纹（xxh64 快照指纹；与最新版相同去重不插行）'",
     "COMMENT ON COLUMN om_version.summary IS '存档说明'",
     "COMMENT ON COLUMN om_version.snapshot IS '存档时全量清单+定义 jsonb（views 段剥离 layout）'",
-    "COMMENT ON COLUMN om_version.published_by IS '存档人（可空；列名保留历史兼容）'",
-    "COMMENT ON COLUMN om_version.published_at IS '存档时间（列名保留历史兼容）'",
+    "COMMENT ON COLUMN om_version.archived_by IS '存档人（可空；原名 published_by，20260917 命名清理：存档≠发布）'",
+    "COMMENT ON COLUMN om_version.archived_at IS '存档时间（原名 published_at，同上）'",
+    "COMMENT ON COLUMN om_version.tag IS '命名发布标记（如 v1.2；NULL = 匿名检查点；唯一约束允许多行 NULL）'",
+    "COMMENT ON COLUMN om_version.release_note IS '发布说明（随 tag 写入；可空）'",
+    // —— 资源级修订历史 ——
+    "COMMENT ON TABLE om_revision IS '资源级修订历史（七类资源每次保存/流转/恢复同事务追加一条；git revert 式回滚的数据基础；修订从 20260917 上线时刻积累）'",
+    "COMMENT ON COLUMN om_revision.id IS '自增主键'",
+    "COMMENT ON COLUMN om_revision.resource_kind IS '资源类别：object/link/interface/shared_property/action/function/view'",
+    "COMMENT ON COLUMN om_revision.api_name IS '资源 apiName（删除后重建同名的修订号接续墓碑前最大值）'",
+    "COMMENT ON COLUMN om_revision.revision IS 'per-resource 递增修订号（事务内 max+1，UNIQUE 兜底并发重试）'",
+    "COMMENT ON COLUMN om_revision.payload IS '单资源完整定义 jsonb（view 剥离 layout）'",
+    "COMMENT ON COLUMN om_revision.change_note IS '变更说明（保存为空；revert/恢复/流转带语义说明；可空）'",
+    "COMMENT ON COLUMN om_revision.changed_by IS '变更人'",
+    "COMMENT ON COLUMN om_revision.changed_at IS '变更时间'",
+    "COMMENT ON COLUMN om_revision.deleted IS '墓碑：true = 本次修订后资源被删除（历史保留，可 revert 恢复）'",
+    // —— 弃用元数据四列（七类同构，注释挂对象类型处详述，余表简注）——
+    "COMMENT ON COLUMN om_object_type.deprecation_reason IS '弃用原因（仅 /lifecycle/transition 写入；离开 deprecated 即清空）'",
+    "COMMENT ON COLUMN om_object_type.sunset_at IS '预期下线期限（transition 必填项之一）'",
+    "COMMENT ON COLUMN om_object_type.replacement_api_name IS '替代资源 apiName（可选，展示用引用不建 FK）'",
+    "COMMENT ON COLUMN om_object_type.deprecated_at IS '废弃动作时间（transition 落库时刻）'",
+    "COMMENT ON COLUMN om_link_type.deprecation_reason IS '弃用原因（同 om_object_type；级联降级由服务端自动填充）'",
+    "COMMENT ON COLUMN om_link_type.sunset_at IS '预期下线期限（级联降级继承触发对象的 sunset_at）'",
+    "COMMENT ON COLUMN om_link_type.replacement_api_name IS '替代资源 apiName（可空）'",
+    "COMMENT ON COLUMN om_link_type.deprecated_at IS '废弃动作时间'",
+    "COMMENT ON COLUMN om_interface.deprecation_reason IS '弃用原因（同 om_object_type）'",
+    "COMMENT ON COLUMN om_interface.sunset_at IS '预期下线期限'",
+    "COMMENT ON COLUMN om_interface.replacement_api_name IS '替代资源 apiName（可空）'",
+    "COMMENT ON COLUMN om_interface.deprecated_at IS '废弃动作时间'",
+    "COMMENT ON COLUMN om_shared_property.deprecation_reason IS '弃用原因（同 om_object_type）'",
+    "COMMENT ON COLUMN om_shared_property.sunset_at IS '预期下线期限'",
+    "COMMENT ON COLUMN om_shared_property.replacement_api_name IS '替代资源 apiName（可空）'",
+    "COMMENT ON COLUMN om_shared_property.deprecated_at IS '废弃动作时间'",
+    "COMMENT ON COLUMN om_action_type.deprecation_reason IS '弃用原因（同 om_object_type）'",
+    "COMMENT ON COLUMN om_action_type.sunset_at IS '预期下线期限'",
+    "COMMENT ON COLUMN om_action_type.replacement_api_name IS '替代资源 apiName（可空）'",
+    "COMMENT ON COLUMN om_action_type.deprecated_at IS '废弃动作时间'",
+    "COMMENT ON COLUMN om_function.deprecation_reason IS '弃用原因（同 om_object_type）'",
+    "COMMENT ON COLUMN om_function.sunset_at IS '预期下线期限'",
+    "COMMENT ON COLUMN om_function.replacement_api_name IS '替代资源 apiName（可空）'",
+    "COMMENT ON COLUMN om_function.deprecated_at IS '废弃动作时间'",
+    "COMMENT ON COLUMN om_view.deprecation_reason IS '弃用原因（场景纳入 lifecycle，同 om_object_type）'",
+    "COMMENT ON COLUMN om_view.sunset_at IS '预期下线期限'",
+    "COMMENT ON COLUMN om_view.replacement_api_name IS '替代场景 apiName（可空）'",
+    "COMMENT ON COLUMN om_view.deprecated_at IS '废弃动作时间'",
+    "COMMENT ON COLUMN om_shared_property.status IS '生命周期：experimental（默认）/ active / deprecated（20260917 起覆盖七类资源）'",
+    "COMMENT ON COLUMN om_view.status IS '生命周期：experimental（默认）/ active / deprecated（场景纳入 lifecycle）'",
+    "COMMENT ON COLUMN om_link_type.version IS '乐观锁版本号（每次保存 +1；20260917 补齐五类表）'",
+    "COMMENT ON COLUMN om_interface.version IS '乐观锁版本号（每次保存 +1）'",
+    "COMMENT ON COLUMN om_shared_property.version IS '乐观锁版本号（每次保存 +1）'",
+    "COMMENT ON COLUMN om_action_type.version IS '乐观锁版本号（每次保存 +1）'",
+    "COMMENT ON COLUMN om_function.version IS '乐观锁版本号（每次保存 +1）'",
     // —— O4 动作执行审计 ——
     "COMMENT ON TABLE oe_action_log IS 'O4 动作执行审计（每次动作执行落一行，含 dry-run；任一步失败即回滚并落 failed）'",
     "COMMENT ON COLUMN oe_action_log.id IS '自增主键（Outbox 经 log_id 回指）'",

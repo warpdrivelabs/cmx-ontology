@@ -15,8 +15,8 @@ use cmx_onto_model::{
 use serde_json::Value;
 
 use crate::store::{
-    get_i64, get_json, get_opt_json, get_opt_string, get_opt_ts, get_string, json_or_default,
-    parse_status, PgOntologyStore,
+    deprecation_from_row, get_i64, get_json, get_opt_json, get_opt_string, get_opt_ts, get_string,
+    json_or_default, parse_status, PgOntologyStore,
 };
 
 impl PgOntologyStore {
@@ -26,7 +26,8 @@ impl PgOntologyStore {
     pub async fn list_views(&self, _tenant: &str) -> StoreResult<Vec<SceneViewMeta>> {
         let ds = self
             .query(
-                "SELECT api_name, display_name, description, dam, members, source, version, updated_at \
+                "SELECT api_name, display_name, description, dam, members, source, version, status, updated_at, \
+                 deprecation_reason, to_char(sunset_at, 'YYYY-MM-DD') AS sunset_at, replacement_api_name, deprecated_at \
                  FROM om_view ORDER BY updated_at DESC",
                 vec![],
                 "om_view_list",
@@ -49,6 +50,7 @@ impl PgOntologyStore {
                 virtual_view: false,
                 version: get_i64(row, s, "version") as u32,
                 members,
+                status: parse_status(row, s),
                 updated_at: get_opt_ts(row, s, "updated_at"),
             });
         }
@@ -59,7 +61,8 @@ impl PgOntologyStore {
     pub async fn get_view(&self, _tenant: &str, api_name: &str) -> StoreResult<Option<SceneViewDef>> {
         let ds = self
             .query(
-                "SELECT api_name, display_name, description, dam, members, source, layout, version \
+                "SELECT api_name, display_name, description, dam, members, source, layout, version, status, \
+                 deprecation_reason, to_char(sunset_at, 'YYYY-MM-DD') AS sunset_at, replacement_api_name, deprecated_at \
                  FROM om_view WHERE api_name = $1",
                 vec![DataValue::String(api_name.to_string())],
                 "om_view_one",
@@ -80,6 +83,8 @@ impl PgOntologyStore {
             source: str_to_view_source(&get_opt_string(row, s, "source").unwrap_or_default()),
             layout: get_opt_json(row, s, "layout").unwrap_or(Value::Null),
             version: get_i64(row, s, "version") as u32,
+            status: parse_status(row, s),
+            deprecation: deprecation_from_row(row, s),
         }))
     }
 
@@ -304,7 +309,8 @@ impl PgOntologyStore {
         let ds = self
             .query(
                 &format!(
-                    "SELECT api_name, display_name, updated_at \
+                    "SELECT api_name, display_name, updated_at, \
+                     deprecation_reason, to_char(sunset_at, 'YYYY-MM-DD') AS sunset_at, replacement_api_name, deprecated_at \
                      FROM om_interface{where_sql} \
                      ORDER BY updated_at DESC LIMIT ${} OFFSET ${}",
                     params.len() - 1,
@@ -326,6 +332,7 @@ impl PgOntologyStore {
                 runtime: None,
                 kind: None,
                 status: None,
+                deprecation: deprecation_from_row(row, s),
             });
         }
         Ok((out, total))
@@ -377,7 +384,8 @@ impl PgOntologyStore {
         let ds = self
             .query(
                 &format!(
-                    "SELECT api_name, display_name, base_type, semantic_type, description \
+                    "SELECT api_name, display_name, base_type, semantic_type, description, status, version, \
+                     deprecation_reason, to_char(sunset_at, 'YYYY-MM-DD') AS sunset_at, replacement_api_name, deprecated_at \
                      FROM om_shared_property{where_sql} \
                      ORDER BY updated_at DESC LIMIT ${} OFFSET ${}",
                     params.len() - 1,
@@ -399,6 +407,9 @@ impl PgOntologyStore {
                 .unwrap_or_default(),
                 semantic_type: get_opt_string(row, s, "semantic_type"),
                 description: get_opt_string(row, s, "description").unwrap_or_default(),
+                status: parse_status(row, s),
+                version: get_i64(row, s, "version") as u32,
+                deprecation: deprecation_from_row(row, s),
             });
         }
         Ok((out, total))
@@ -418,7 +429,8 @@ impl PgOntologyStore {
         }
         let ds = self
             .query(
-                "SELECT api_name, display_name, base_type, semantic_type, description \
+                "SELECT api_name, display_name, base_type, semantic_type, description, status, version, \
+                 deprecation_reason, to_char(sunset_at, 'YYYY-MM-DD') AS sunset_at, replacement_api_name, deprecated_at \
                  FROM om_shared_property WHERE api_name = ANY($1)",
                 vec![DataValue::Array(
                     api_names.iter().map(|n| DataValue::String(n.clone())).collect(),
@@ -438,6 +450,9 @@ impl PgOntologyStore {
                 .unwrap_or_default(),
                 semantic_type: get_opt_string(row, s, "semantic_type"),
                 description: get_opt_string(row, s, "description").unwrap_or_default(),
+                status: parse_status(row, s),
+                version: get_i64(row, s, "version") as u32,
+                deprecation: deprecation_from_row(row, s),
             });
         }
         Ok(out)
@@ -459,6 +474,8 @@ fn view_source_str(v: &ViewSource) -> &'static str {
         ViewSource::Manual => "manual",
     }
 }
+
+pub(crate) fn view_source_str_pub(v: &ViewSource) -> &'static str { view_source_str(v) }
 
 pub(crate) fn str_to_view_source(s: &str) -> ViewSource {
     match s {
@@ -495,5 +512,6 @@ fn object_meta_from_row(row: &Row, s: &Schema) -> StoreResult<ObjectTypeMeta> {
             .unwrap_or_default(),
         version: get_i64(row, s, "version") as u32,
         updated_at: get_opt_ts(row, s, "updated_at"),
+        deprecation: deprecation_from_row(row, s),
     })
 }

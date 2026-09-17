@@ -65,11 +65,10 @@ pub fn map_row(mapping: &SourceMapping, row: &Value) -> Result<MappedObject, Vec
     // 属性
     let mut props = Map::new();
     for (src, prop) in &mapping.property_map {
-        if let Some(v) = obj.get(src) {
-            if !v.is_null() {
+        if let Some(v) = obj.get(src)
+            && !v.is_null() {
                 props.insert(prop.clone(), v.clone());
             }
-        }
     }
 
     // 主键裁定

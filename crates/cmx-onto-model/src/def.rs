@@ -24,6 +24,56 @@ pub enum TypeStatus {
     Deprecated,
 }
 
+impl TypeStatus {
+    /// camelCase 文本（与列存一致；SQL 拼接/比对用）。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TypeStatus::Experimental => "experimental",
+            TypeStatus::Active => "active",
+            TypeStatus::Deprecated => "deprecated",
+        }
+    }
+}
+
+/// 弃用元数据（方案 20260917 §5.3；七类资源表四列的回读载体）。
+///
+/// **写入路径唯一**：仅 `POST /lifecycle/transition` 写入；普通 save 剥离（防旁路篡改）；
+/// 离开 deprecated 即整体置 NULL（弃用史留在修订历史）。挂在定义上的这份是**回读展示**字段，
+/// 保存 round-trip 时被剥离、不落库。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeprecationMeta {
+    /// 弃用原因（transition → deprecated 必填）。
+    #[serde(default)]
+    pub reason: String,
+    /// 预期下线期限（YYYY-MM-DD；transition 必填）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sunset_at: Option<String>,
+    /// 替代资源 apiName（可选，展示用引用）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replacement_api_name: Option<String>,
+    /// 废弃动作时间。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecated_at: Option<DateTime<Utc>>,
+}
+
+/// 兼容矩阵判定（方案 20260917 §5.4；对齐 Palantir
+/// ConflictBetweenLinkTypeStatusAndObjectTypeStatus，按"任一端"穷尽 9 组合）。
+///
+/// 返回该关系在两端对象当前状态下**允许的状态集**：
+/// 任一端 deprecated → 仅 deprecated；否则任一端 experimental → 仅 experimental；
+/// 两端均 active → 三态皆可（单独废弃一条关系而两端对象继续 active 是合法下线）。
+pub fn allowed_link_status(a: TypeStatus, b: TypeStatus) -> &'static [TypeStatus] {
+    use TypeStatus::{Active, Deprecated, Experimental};
+    if a == Deprecated || b == Deprecated {
+        &[Deprecated]
+    } else if a == Experimental || b == Experimental {
+        &[Experimental]
+    } else {
+        &[Active, Experimental, Deprecated]
+    }
+}
+
 /// 元模型类别（用于清单/版本/通用列表）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -167,6 +217,9 @@ pub struct ObjectTypeDef {
     pub cmx_origin: Option<Value>,
     #[serde(default)]
     pub version: u32,
+    /// 弃用元数据回读（仅 transition 写入；save round-trip 剥离不落库）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecation: Option<DeprecationMeta>,
 }
 
 impl ObjectTypeDef {
@@ -348,6 +401,12 @@ pub struct LinkTypeDef {
     pub backing: Value,
     #[serde(default)]
     pub status: TypeStatus,
+    /// 乐观锁（0 = 新建/盲写；>0 = 条件更新，20260917 补齐五类表）。
+    #[serde(default)]
+    pub version: u32,
+    /// 弃用元数据回读（仅 transition 写入；save round-trip 剥离不落库）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecation: Option<DeprecationMeta>,
 }
 
 impl LinkTypeDef {
@@ -418,13 +477,12 @@ impl LinkTypeDef {
                             )));
                         }
                     }
-                    if let Some(s) = keys.get("side").and_then(|x| x.as_str()) {
-                        if !matches!(s, "a" | "A" | "b" | "B") {
+                    if let Some(s) = keys.get("side").and_then(|x| x.as_str())
+                        && !matches!(s, "a" | "A" | "b" | "B") {
                             return Err(crate::Error::Definition(format!(
                                 "ForeignKey backing 的 side「{s}」非法（仅 a / b）"
                             )));
                         }
-                    }
                 }
                 if property.trim().is_empty() {
                     return Err(crate::Error::Definition(
@@ -436,13 +494,12 @@ impl LinkTypeDef {
                         "ForeignKey backing 的 sourceProperty「{property}」非法（须字母/下划线开头，仅字母数字下划线）"
                     )));
                 }
-                if let Some(tp) = &target_property {
-                    if !is_valid_api_name(tp) {
+                if let Some(tp) = &target_property
+                    && !is_valid_api_name(tp) {
                         return Err(crate::Error::Definition(format!(
                             "ForeignKey backing 的 targetProperty「{tp}」非法（须字母/下划线开头，仅字母数字下划线）"
                         )));
                     }
-                }
                 // 显式 side 与基数的一致性（外键恒在 many 端；缺省 side 已在解析层按基数推导）。
                 let expect = match self.cardinality {
                     LinkCardinality::OneToMany => Some(LinkEnd::B),
@@ -454,8 +511,8 @@ impl LinkTypeDef {
                         ));
                     }
                 };
-                if let Some(want) = expect {
-                    if want != side {
+                if let Some(want) = expect
+                    && want != side {
                         let want_s = if want == LinkEnd::A { "a" } else { "b" };
                         let got_s = if side == LinkEnd::A { "a" } else { "b" };
                         return Err(crate::Error::Definition(format!(
@@ -463,7 +520,6 @@ impl LinkTypeDef {
                             self.cardinality
                         )));
                     }
-                }
             }
             LinkBacking::JoinTable { table, left_column, right_column } => {
                 if self.cardinality != LinkCardinality::ManyToMany {
@@ -542,6 +598,12 @@ pub struct InterfaceDef {
     pub extends: Vec<String>,
     #[serde(default)]
     pub status: TypeStatus,
+    /// 乐观锁（20260917 补齐五类表）。
+    #[serde(default)]
+    pub version: u32,
+    /// 弃用元数据回读（仅 transition 写入；save round-trip 剥离不落库）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecation: Option<DeprecationMeta>,
 }
 
 impl InterfaceDef {
@@ -569,6 +631,15 @@ pub struct SharedPropertyTypeDef {
     pub semantic_type: Option<String>,
     #[serde(default)]
     pub description: String,
+    /// 生命周期（20260917 起状态覆盖七类资源；此前共享属性无状态）。
+    #[serde(default)]
+    pub status: TypeStatus,
+    /// 乐观锁（20260917 补齐五类表）。
+    #[serde(default)]
+    pub version: u32,
+    /// 弃用元数据回读（仅 transition 写入；save round-trip 剥离不落库）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecation: Option<DeprecationMeta>,
 }
 
 impl SharedPropertyTypeDef {
@@ -611,6 +682,12 @@ pub struct ActionTypeDef {
     pub function_backing: Option<String>,
     #[serde(default)]
     pub status: TypeStatus,
+    /// 乐观锁（20260917 补齐五类表）。
+    #[serde(default)]
+    pub version: u32,
+    /// 弃用元数据回读（仅 transition 写入；save round-trip 剥离不落库）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecation: Option<DeprecationMeta>,
 }
 
 impl ActionTypeDef {
@@ -674,6 +751,12 @@ pub struct FunctionDef {
     pub description: String,
     #[serde(default)]
     pub status: TypeStatus,
+    /// 乐观锁（20260917 补齐五类表）。
+    #[serde(default)]
+    pub version: u32,
+    /// 弃用元数据回读（仅 transition 写入；save round-trip 剥离不落库）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecation: Option<DeprecationMeta>,
 }
 
 impl FunctionDef {
@@ -714,6 +797,9 @@ pub struct ObjectTypeMeta {
     pub version: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<DateTime<Utc>>,
+    /// 弃用元数据（explorer 悬停 / Inspector 查看 / 发布门禁警告清单摘录；非 deprecated 为 None）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecation: Option<DeprecationMeta>,
 }
 
 /// 关系类型清单项。
@@ -738,6 +824,9 @@ pub struct LinkTypeMeta {
     /// 清单必须带锚点：Inspector 关系编辑表单靠它回显当前锚点，缺失会被误判「未登记锚点」且保存时把锚点洗掉。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backing: Option<Value>,
+    /// 弃用元数据（非 deprecated 为 None）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecation: Option<DeprecationMeta>,
 }
 
 /// 通用类型清单项（接口/共享属性/函数；动作用下方富化的 [`ActionTypeMeta`]）。
@@ -763,6 +852,9 @@ pub struct SimpleTypeMeta {
     /// 状态（清单富化 20260913，函数/接口填充；共享属性恒 None）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// 弃用元数据（20260917；非 deprecated 为 None）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecation: Option<DeprecationMeta>,
 }
 
 /// 动作类型清单项（P2-0 清单富化：含参数与作用对象类型，前端据此按对象类型过滤动作）。
@@ -783,6 +875,9 @@ pub struct ActionTypeMeta {
     pub target_object_types: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<DateTime<Utc>>,
+    /// 弃用元数据（20260917；非 deprecated 为 None）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecation: Option<DeprecationMeta>,
 }
 
 /// 本体全量清单（建模台/OSDK 生成的输入）。
@@ -797,7 +892,7 @@ pub struct OntologyManifest {
     pub functions: Vec<SimpleTypeMeta>,
 }
 
-/// 发布版本元数据（不可变快照）。
+/// 存档检查点元数据（不可变快照；tag 非空 = 命名发布标记）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OntologyVersionMeta {
@@ -805,6 +900,12 @@ pub struct OntologyVersionMeta {
     pub rev: String,
     pub summary: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub published_by: Option<String>,
-    pub published_at: DateTime<Utc>,
+    pub archived_by: Option<String>,
+    pub archived_at: DateTime<Utc>,
+    /// 发布标记名（如 v1.2；NULL = 匿名检查点）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    /// 发布说明（随 tag 写入）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_note: Option<String>,
 }

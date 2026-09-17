@@ -27,6 +27,12 @@ pub async fn warm_store() -> Result<(), String> {
         Ok(_) => {}
         Err(e) => tracing::warn!(db = ONTO_DB_ID, e = %e, "动作作用对象列回填失败（不影响启动；保存时将重算）"),
     }
+    // 方案 20260917 §7.1 存量迁移：manual 场景 members 缺 links 键的按"两端在场"回填（幂等；视觉不变）。
+    match store.backfill_view_links().await {
+        Ok(n) if n > 0 => tracing::info!(db = ONTO_DB_ID, n, "✅ 场景 links 白名单已回填"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(db = ONTO_DB_ID, e = %e, "场景 links 回填失败（不影响启动）"),
+    }
     tracing::info!(db = ONTO_DB_ID, "✅ 本体存储 schema 就绪（om_* 七表）");
     Ok(())
 }

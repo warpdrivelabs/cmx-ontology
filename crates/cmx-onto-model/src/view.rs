@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::def::DamRef;
+use crate::def::{DamRef, DeprecationMeta, TypeStatus};
 
 /// 视图来源（camelCase 序列化）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -26,6 +26,10 @@ pub enum ViewSource {
 }
 
 /// 视图成员引用（仅 manual 物化；auto 恒空）。
+///
+/// `links` 是**场景内关系类型的显式白名单**（方案 20260917 §7.1，D3 裁决）：
+/// 边 = （link ∈ links）∧（两端对象 ∈ objects）——可表达"两个对象都在场景里，
+/// 但这条关系不显示"。auto 视图 links 读时现算（= 该域对象间全部两端在场关系）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ViewMembers {
@@ -33,6 +37,8 @@ pub struct ViewMembers {
     pub objects: Vec<String>,
     #[serde(default)]
     pub interfaces: Vec<String>,
+    #[serde(default)]
+    pub links: Vec<String>,
 }
 
 /// 场景视图定义（om_view 行）。
@@ -58,6 +64,12 @@ pub struct SceneViewDef {
     /// 乐观锁（B0 同款：0 = 新建/盲写，>0 = 条件更新）。
     #[serde(default)]
     pub version: u32,
+    /// 生命周期（20260917 场景纳入 lifecycle：可废弃而非只能硬删）。
+    #[serde(default)]
+    pub status: TypeStatus,
+    /// 弃用元数据回读（仅 transition 写入；save round-trip 剥离不落库）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecation: Option<DeprecationMeta>,
 }
 
 impl SceneViewDef {
@@ -75,7 +87,10 @@ impl SceneViewDef {
                         "auto 视图 apiName 须以「auto:」开头（域默认视图命名纪律）".into(),
                     ));
                 }
-                if !self.members.objects.is_empty() || !self.members.interfaces.is_empty() {
+                if !self.members.objects.is_empty()
+                    || !self.members.interfaces.is_empty()
+                    || !self.members.links.is_empty()
+                {
                     return Err(crate::Error::Definition(
                         "auto 视图不物化成员（成员读时按 DAM 现算）".into(),
                     ));
@@ -112,6 +127,9 @@ pub struct SceneViewMeta {
     /// 成员引用（仅 manual 有值；auto 恒空——前端成员编辑以此取全集，避免把既有成员误当空集覆盖）。
     #[serde(default)]
     pub members: ViewMembers,
+    /// 生命周期（场景切换器弱化置底 deprecated 用）。
+    #[serde(default)]
+    pub status: TypeStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<DateTime<Utc>>,
 }

@@ -25,6 +25,9 @@ pub mod flow_callback_handlers;
 pub mod import_handlers;
 pub mod osdk_handlers;
 pub mod events;
+pub mod filter;
+pub mod lifecycle;
+pub mod revision_handlers;
 pub mod object_engine;
 pub mod object_handlers;
 pub mod module;
@@ -141,6 +144,15 @@ where
             "/functions/{api_name}",
             get(handlers::get_function).delete(handlers::delete_function),
         )
+        // —— 生命周期状态流转（方案 20260917 §5：状态变更唯一入口；save 端点剥离 status）——
+        .route("/lifecycle/transition", post(lifecycle::transition))
+        // —— 资源级修订历史（§6.2/§6.3：时间线 / 详情 / git revert 式回滚）——
+        .route("/revisions", get(revision_handlers::list_revisions))
+        .route("/revisions/detail", get(revision_handlers::revision_detail))
+        .route("/revisions/revert", post(revision_handlers::revert))
+        // —— 命名发布标记（§6.4：发布 = 给检查点起名；门禁 + tag）——
+        .route("/releases", post(archive_handlers::create_release))
+        .route("/releases/remove", post(archive_handlers::remove_release))
         // —— 清单 / 存档 / 版本（直改 live 架构：编辑直写 om_*，存档 = 检查点，回滚 = 恢复）——
         .route("/manifest", get(handlers::manifest))
         .route("/snapshots", post(archive_handlers::create_snapshot))

@@ -676,11 +676,10 @@ pub fn derive_target_object_types(parameters: &Value, logic: &Value) -> Vec<Stri
             if matches!(
                 kind,
                 "createObject" | "createOrModifyObject" | "modifyObject" | "deleteObject"
-            ) {
-                if let Some(ot) = op.get("objectType").and_then(Value::as_str) {
+            )
+                && let Some(ot) = op.get("objectType").and_then(Value::as_str) {
                     push(ot, &mut out);
                 }
-            }
         }
     }
     out

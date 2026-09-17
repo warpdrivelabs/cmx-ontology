@@ -8,6 +8,8 @@ pub mod snapshot_store;
 pub mod funnel_store;
 pub mod link_resolver;
 pub mod object_store;
+pub mod revision_store;
+pub mod save_store;
 pub mod policy_store;
 pub mod store;
 pub mod view_store;

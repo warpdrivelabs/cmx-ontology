@@ -119,11 +119,10 @@ impl PgObjectStore {
             return Ok(("notFound".into(), None, None));
         };
         // 版本校验
-        if let Some(exp) = expected_updated_at {
-            if cur_uat.as_deref() != Some(exp) {
+        if let Some(exp) = expected_updated_at
+            && cur_uat.as_deref() != Some(exp) {
                 return Ok(("conflict".into(), cur_uat, Some(Value::Object(props))));
             }
-        }
         // 合并 set
         if let Some(patch) = set.as_object() {
             for (k, v) in patch {

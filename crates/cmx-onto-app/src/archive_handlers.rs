@@ -17,6 +17,7 @@ use axum::extract::Query;
 use axum::Json;
 use cmx_onto_model::{
     derive_deletions, diff_snapshots, element_total, validate_snapshot, IssueSeverity,
+    OntologyStore,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -99,16 +100,16 @@ pub async fn create_snapshot(Json(req): Json<SnapshotReq>) -> Result<Json<ApiRes
         .archive_snapshot(&tenant, summary, current_display_user())
         .await
         .map_err(|e| OntoError::internal_error(format!("存档失败: {e}")))?;
-    // O7 实时：广播存档事件（payload 含 publishedBy 供前端过滤自发提示）。
+    // O7 实时：广播检查点事件（§6.5 命名清理：存档≠发布；发布走 /releases + release-created）。
     crate::events::emit(
         &tenant,
-        "published",
+        "checkpoint-created",
         json!({
             "version": outcome.version,
             "rev": outcome.rev,
             "deduped": outcome.deduped,
             "summary": outcome.summary,
-            "publishedBy": current_display_user(),
+            "archivedBy": current_display_user(),
         }),
     );
     Ok(Json(ApiResp::ok(serde_json::to_value(&outcome).unwrap_or(Value::Null))))
@@ -217,17 +218,153 @@ pub async fn versions_restore(Json(req): Json<RestoreReq>) -> Result<Json<ApiRes
             cmx_onto_model::StoreError::Conflict(m) => OntoError::conflict(m),
             other => OntoError::internal_error(format!("回滚失败: {other}")),
         })?;
-    // O7 实时：回滚完成广播（订阅者经 /events SSE 感知刷新）。
+    // O7 实时：回滚完成广播（检查点事件 + 资源变更事件——修订管道已逐资源留痕）。
     crate::events::emit(
         &tenant,
-        "published",
+        "checkpoint-created",
         json!({
             "version": outcome.archive_version,
             "restoredFrom": outcome.restored_from,
             "deduped": outcome.archive_deduped,
             "summary": format!("回滚到 v{}", req.version),
-            "publishedBy": current_display_user(),
+            "archivedBy": current_display_user(),
+        }),
+    );
+    crate::events::emit(
+        &tenant,
+        "resource-changed",
+        json!({
+            "kind": "batch",
+            "action": "restore",
+            "restoredFrom": req.version,
+            "by": current_display_user(),
         }),
     );
     Ok(Json(ApiResp::ok(serde_json::to_value(&outcome).unwrap_or(Value::Null))))
+}
+
+// ───────────────────────── 命名发布标记（§6.4） ─────────────────────────
+
+/// POST /releases 请求体。
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ReleaseReq {
+    /// 发布标记名（如 v1.2；非空 ≤64、`^[A-Za-z0-9][A-Za-z0-9._-]*$`、不得纯数字）。
+    pub tag: String,
+    #[serde(default)]
+    pub note: Option<String>,
+    /// 发布门禁：live 含 experimental / deprecated 资源时必须显式确认（对齐 confirmMassDelete 风格）。
+    #[serde(default)]
+    pub acknowledge_warnings: bool,
+}
+
+/// tag 格式校验（§6.4）。
+fn validate_tag(tag: &str) -> Result<()> {
+    if tag.is_empty() || tag.len() > 64 {
+        return Err(OntoError::bad_request("tag 非空且 ≤64 字符"));
+    }
+    let ok = tag.chars().next().map(|c| c.is_ascii_alphanumeric()).unwrap_or(false)
+        && tag
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-');
+    if !ok {
+        return Err(OntoError::bad_request(
+            "tag 须匹配 ^[A-Za-z0-9][A-Za-z0-9._-]*$",
+        ));
+    }
+    if tag.chars().all(|c| c.is_ascii_digit()) {
+        return Err(OntoError::bad_request("tag 不得为纯数字（避免与存档版本号混淆）"));
+    }
+    Ok(())
+}
+
+/// POST /releases —— 发布 = 给检查点起名：跑发布门禁（experimental / deprecated 警告清单）→
+/// 打全量检查点并置 tag。软中带硬：警告可 acknowledge 放行（治理动作，D2 自洽）。
+pub async fn create_release(Json(req): Json<ReleaseReq>) -> Result<Json<ApiResp<Value>>> {
+    require_maintainer().await?;
+    let tenant = current_tenant();
+    validate_tag(req.tag.trim())?;
+    let tag = req.tag.trim().to_string();
+    let m = store()
+        .manifest(&tenant)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("装载清单失败: {e}")))?;
+    let mut warnings: Vec<Value> = Vec::new();
+    for t in &m.object_types {
+        if t.status != cmx_onto_model::TypeStatus::Active {
+            warnings.push(json!({ "kind": "object", "apiName": t.api_name, "status": t.status.as_str(), "deprecation": t.deprecation }));
+        }
+    }
+    for l in &m.link_types {
+        if l.status != cmx_onto_model::TypeStatus::Active {
+            warnings.push(json!({ "kind": "link", "apiName": l.api_name, "status": l.status.as_str(), "deprecation": l.deprecation }));
+        }
+    }
+    for list in [&m.interfaces, &m.shared_properties, &m.functions] {
+        for t in list {
+            if t.status.as_deref() == Some("experimental") || t.status.as_deref() == Some("deprecated") {
+                warnings.push(json!({ "kind": "simple", "apiName": t.api_name, "status": t.status }));
+            }
+        }
+    }
+    for t in &m.action_types {
+        if t.status != cmx_onto_model::TypeStatus::Active {
+            warnings.push(json!({ "kind": "action", "apiName": t.api_name, "status": t.status.as_str(), "deprecation": t.deprecation }));
+        }
+    }
+    if !warnings.is_empty() && !req.acknowledge_warnings {
+        let preview = warnings
+            .iter()
+            .take(5)
+            .filter_map(|w| w.get("apiName").and_then(|n| n.as_str()))
+            .collect::<Vec<_>>()
+            .join("、");
+        return Err(OntoError::conflict(format!(
+            "发布门禁：live 含 {} 个 experimental / deprecated 资源（如 {preview}）。\
+             确认发布请带 acknowledgeWarnings=true 重发",
+            warnings.len()
+        )));
+    }
+    let outcome = store()
+        .create_release(&tag, req.note.as_deref().unwrap_or(""), current_display_user())
+        .await
+        .map_err(|e| OntoError::internal_error(format!("发布失败: {e}")))?;
+    crate::events::emit(
+        &tenant,
+        "release-created",
+        json!({
+            "tag": outcome.tag,
+            "version": outcome.version,
+            "rev": outcome.rev,
+            "reused": outcome.reused,
+            "by": current_display_user(),
+        }),
+    );
+    Ok(Json(ApiResp::ok(json!({
+        "tag": outcome.tag,
+        "version": outcome.version,
+        "rev": outcome.rev,
+        "reused": outcome.reused,
+        "warnings": warnings,
+    }))))
+}
+
+/// POST /releases/remove 请求体。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReleaseRemoveReq {
+    pub tag: String,
+}
+
+/// POST /releases/remove —— 解除发布标记（只清 tag，不删检查点行）。
+pub async fn remove_release(Json(req): Json<ReleaseRemoveReq>) -> Result<Json<ApiResp<Value>>> {
+    require_maintainer().await?;
+    let n = store()
+        .remove_release(&req.tag)
+        .await
+        .map_err(|e| OntoError::internal_error(format!("解除发布标记失败: {e}")))?;
+    if n == 0 {
+        return Err(OntoError::not_found(format!("发布标记 {} 不存在", req.tag)));
+    }
+    Ok(Json(ApiResp::ok(json!({ "tag": req.tag, "removed": true }))))
 }

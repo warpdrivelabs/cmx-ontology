@@ -561,7 +561,7 @@ mod tests {
         let ok = SceneViewDef {
             api_name: "procure_scene".into(),
             source: ViewSource::Manual,
-            members: ViewMembers { objects: vec!["A".into()], interfaces: vec!["I".into()] },
+            members: ViewMembers { objects: vec!["A".into()], interfaces: vec!["I".into()], links: vec![] },
             ..Default::default()
         };
         assert!(ok.validate().is_ok());

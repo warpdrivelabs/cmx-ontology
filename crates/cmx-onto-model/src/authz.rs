@@ -40,11 +40,10 @@ pub fn redact_rows(
     for r in rows.iter_mut() {
         if let Value::Object(m) = &mut r.properties {
             for (k, v) in m.iter_mut() {
-                if let Some(mk) = marking_by_prop.get(k) {
-                    if deny_markings.iter().any(|d| d == mk) {
+                if let Some(mk) = marking_by_prop.get(k)
+                    && deny_markings.iter().any(|d| d == mk) {
                         *v = Value::String("***".to_string());
                     }
-                }
             }
         }
     }

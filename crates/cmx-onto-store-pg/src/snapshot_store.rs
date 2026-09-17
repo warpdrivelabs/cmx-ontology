@@ -28,6 +28,16 @@ use serde_json::Value;
 
 use crate::store::{get_i64, get_json, get_opt_string, get_string, PgOntologyStore};
 
+/// 发布结果（发布标记创建；reused = 复用最新检查点行）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReleaseOutcome {
+    pub version: u32,
+    pub rev: String,
+    pub tag: String,
+    pub reused: bool,
+}
+
 /// 存档结果（含去重标记，供前端 toast）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -153,6 +163,9 @@ impl PgOntologyStore {
     ) -> StoreResult<RestoreOutcome> {
         let mut counts = ApplyCounts::default();
 
+        // 0. 应用前 live 快照（修订 diff 基线 + 删除集派生基线）。
+        let live_before = self.snapshot_full_tx(txn).await?;
+
         // 1. 六类批量 upsert（target 数组直接进 jsonb_to_recordset，字段 camelCase 对位）。
         let batches: [(&str, &str, Option<&Value>); 6] = [
             ("om_object_type", UPSERT_OBJECTS, target.get("objectTypes")),
@@ -178,14 +191,12 @@ impl PgOntologyStore {
 
         // 2. views 应用：upsert 目标全量（DO UPDATE **不含 layout 列**——保留 live 布局；
         //    新行 layout 缺省 '{}'——历史快照已剥离 layout）。
-        if let Some(views) = target.get("views") {
-            if let Some(arr) = views.as_array() {
-                if !arr.is_empty() {
+        if let Some(views) = target.get("views")
+            && let Some(arr) = views.as_array()
+                && !arr.is_empty() {
                     self.exec_tx(txn, UPSERT_VIEWS, vec![json_param(views)], "om_view_restore")
                         .await?;
                 }
-            }
-        }
         counts.views_upserted = arr_len(target.get("views"));
 
         // 3. views 删除：live manual 行有、目标无 → 删除；**auto 行豁免**（布局物化产物）。
@@ -215,17 +226,16 @@ impl PgOntologyStore {
         }
         counts.views_removed = stale_manual.len();
 
-        // 4. 派生删除集 = live − 目标（权威语义）+ 大规模删除护栏。
-        let live = self.snapshot_full_tx(txn).await?;
-        let deletions = derive_deletions(&live, target);
+        // 4. 派生删除集 = 应用前 live − 目标（权威语义）+ 大规模删除护栏。
+        let deletions = derive_deletions(&live_before, target);
         counts.deletions = deletions.len();
-        let threshold = std::cmp::max(50, element_total(&live) / 5);
+        let threshold = std::cmp::max(50, element_total(&live_before) / 5);
         if deletions.len() > threshold && !confirm_mass_delete {
             return Err(StoreError::Conflict(format!(
                 "本次回滚将删除 {} 个元素（live 共 {}，超过护栏阈值 {threshold}）。\
                  确属批量回滚请在请求带 confirmMassDelete=true 重发",
                 deletions.len(),
-                element_total(&live)
+                element_total(&live_before)
             )));
         }
         self.apply_deletions_tx(txn, &deletions).await?;
@@ -240,12 +250,218 @@ impl PgOntologyStore {
         // P2-0：恢复后回填动作作用对象物化列（事务内，看到本事务刚 upsert 的行；派生真源在内核）。
         self.backfill_action_targets(Some(txn)).await?;
 
+        // 6. 修订管道（方案 §6.4）：每个被改变的资源写一条修订（payload=恢复后定义，含快照携带
+        //    的 status），删除写墓碑——历史完整不断链。
+        let note = format!("回滚到 v{restored_from}");
+        self.append_restore_revisions_tx(txn, &live_before, target, &deletions, &note, &archived_by.clone().unwrap_or_default()).await?;
+
+        // 7. 弃用元数据一致性（方案 §5.3）：快照回滚可能把 status 带回非 deprecated——统一清空。
+        self.clear_stale_deprecation_tx(txn).await?;
+
         Ok(RestoreOutcome {
             restored_from,
             archive_version,
             archive_deduped,
             counts,
         })
+    }
+
+    /// 回滚修订 diff（方案 §6.4）：对每个被改变/删除的资源追加修订。
+    /// 改变判定 = 目标元素与应用前 live 元素 JSON 不等（view 比较与 payload 均剥离 layout）。
+    async fn append_restore_revisions_tx(
+        &self,
+        txn: &str,
+        live_before: &Value,
+        target: &Value,
+        deletions: &[DeletionRef],
+        note: &str,
+        changed_by: &str,
+    ) -> StoreResult<()> {
+        // 快照段名 → 修订 kind。
+        const SEG_KINDS: &[(&str, &str)] = &[
+            ("objectTypes", "object"),
+            ("linkTypes", "link"),
+            ("interfaces", "interface"),
+            ("sharedProperties", "shared_property"),
+            ("actionTypes", "action"),
+            ("functions", "function"),
+            ("views", "view"),
+        ];
+        for (seg, kind) in SEG_KINDS {
+            let strip_layout = *kind == "view";
+            let mut live_by_name: std::collections::BTreeMap<String, &Value> =
+                std::collections::BTreeMap::new();
+            for el in live_before.get(seg).and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]) {
+                if let Some(name) = el.get("apiName").and_then(|n| n.as_str()) {
+                    live_by_name.insert(name.to_string(), el);
+                }
+            }
+            for el in target.get(seg).and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]) {
+                let Some(name) = el.get("apiName").and_then(|n| n.as_str()) else { continue };
+                let name = name.to_string();
+                let (mut el_v, mut live_v) = (el.clone(), live_by_name.get(&name).map(|x| (*x).clone()));
+                if strip_layout {
+                    if let Some(o) = el_v.as_object_mut() { o.remove("layout"); }
+                    if let Some(lv) = live_v.as_mut()
+                        && let Some(o) = lv.as_object_mut() { o.remove("layout"); }
+                }
+                let changed = match &live_v {
+                    None => true,
+                    Some(lv) => lv != &el_v,
+                };
+                if changed {
+                    self.append_revision_tx(txn, kind, &name, &el_v, Some(note), changed_by, false).await?;
+                }
+            }
+        }
+        // 删除墓碑：payload = 应用前 live 定义。
+        let kind_of = |k: &str| match k {
+            "objectType" => "object",
+            "linkType" => "link",
+            "interface" => "interface",
+            "sharedProperty" => "shared_property",
+            "actionType" => "action",
+            "function" => "function",
+            "view" => "view",
+            _ => "object",
+        };
+        for d in deletions {
+            let kind = kind_of(d.kind.as_str());
+            let seg = match kind {
+                "object" => "objectTypes",
+                "link" => "linkTypes",
+                "interface" => "interfaces",
+                "shared_property" => "sharedProperties",
+                "action" => "actionTypes",
+                "function" => "functions",
+                _ => "views",
+            };
+            let payload = live_before
+                .get(seg)
+                .and_then(|v| v.as_array())
+                .and_then(|arr| {
+                    arr.iter().find(|el| el.get("apiName").and_then(|n| n.as_str()) == Some(d.api_name.as_str()))
+                })
+                .cloned()
+                .map(|mut el| {
+                    if kind == "view"
+                        && let Some(o) = el.as_object_mut() { o.remove("layout"); }
+                    el
+                })
+                .unwrap_or_else(|| Value::Object(Default::default()));
+            let note_d = format!("{note}（删除）");
+            self.append_revision_tx(txn, kind, &d.api_name, &payload, Some(&note_d), changed_by, true).await?;
+        }
+        Ok(())
+    }
+
+    /// 命名发布标记（方案 §6.4）：发布 = 给检查点起名。
+    /// tag 复用规则：最新检查点 rev 与 live 相同**且其 tag 为 NULL** → 复用该行置 tag；
+    /// 该行已有 tag（如 v1.1）而 live 无变化 → 强制插入新检查点行（同 rev 新 version）承载新 tag。
+    pub async fn create_release(
+        &self,
+        tag: &str,
+        release_note: &str,
+        archived_by: Option<String>,
+    ) -> StoreResult<ReleaseOutcome> {
+        let manager = get_default_pg_db_manager();
+        let txn_ctx = manager.get_transaction_context();
+        let txn = txn_ctx
+            .begin(&self.db_id)
+            .await
+            .map_err(|e| StoreError::Backend(format!("开启发布事务失败: {e}")))?;
+        let out = self.create_release_tx(&txn, tag, release_note, &archived_by).await;
+        match out {
+            Ok(o) => {
+                txn_ctx
+                    .commit(&txn)
+                    .await
+                    .map_err(|e| StoreError::Backend(format!("提交发布事务失败: {e}")))?;
+                Ok(o)
+            }
+            Err(e) => {
+                let _ = txn_ctx.rollback(&txn).await;
+                Err(e)
+            }
+        }
+    }
+
+    async fn create_release_tx(
+        &self,
+        txn: &str,
+        tag: &str,
+        release_note: &str,
+        archived_by: &Option<String>,
+    ) -> StoreResult<ReleaseOutcome> {
+        let mut snapshot = self.snapshot_full_tx(txn).await?;
+        strip_view_layout(&mut snapshot);
+        let rev = snapshot_fingerprint(&snapshot);
+        let latest = self
+            .query_tx(
+                txn,
+                "SELECT version, rev, tag FROM om_version ORDER BY version DESC LIMIT 1",
+                vec![],
+                "om_release_latest",
+            )
+            .await?;
+        let latest_row = latest.iter().next().map(|row| {
+            let s = latest.schema.as_ref();
+            (
+                get_i64(row, s, "version") as u32,
+                get_opt_string(row, s, "rev").unwrap_or_default(),
+                get_opt_string(row, s, "tag").filter(|t| !t.is_empty()),
+            )
+        });
+        // 复用：rev 相同且未带 tag。
+        if let Some((lv, lrev, None)) = &latest_row
+            && lrev == &rev {
+                self.exec_tx(
+                    txn,
+                    "UPDATE om_version SET tag = $2, release_note = $3 WHERE version = $1",
+                    vec![
+                        DataValue::Int(*lv as i64),
+                        DataValue::String(tag.to_string()),
+                        DataValue::String(release_note.to_string()),
+                    ],
+                    "om_release_reuse",
+                )
+                .await?;
+                return Ok(ReleaseOutcome { version: *lv, rev, tag: tag.to_string(), reused: true });
+            }
+        // 插新行（同 rev 新 version 承载新 tag；撞号重试）。
+        let next = latest_row.as_ref().map_or(1u32, |(lv, _, _)| lv.saturating_add(1));
+        for _ in 0..3 {
+            let n = self
+                .exec_tx(
+                    txn,
+                    "INSERT INTO om_version (version, rev, summary, snapshot, archived_by, archived_at, tag, release_note)                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (version) DO NOTHING",
+                    vec![
+                        DataValue::Int(next as i64),
+                        DataValue::String(rev.clone()),
+                        DataValue::String(format!("发布 {tag}")),
+                        json_param(&snapshot),
+                        crate::store::opt_str(archived_by),
+                        DataValue::DateTime(Utc::now()),
+                        DataValue::String(tag.to_string()),
+                        DataValue::String(release_note.to_string()),
+                    ],
+                    "om_release_insert",
+                )
+                .await?;
+            if n > 0 {
+                return Ok(ReleaseOutcome { version: next, rev, tag: tag.to_string(), reused: false });
+            }
+        }
+        Err(StoreError::Backend("发布版本号并发冲突（重试 3 次未成功），请稍后重试".into()))
+    }
+
+    /// 解除发布标记（只清 tag / release_note，不删检查点行——检查点不可变原则）。
+    pub async fn remove_release(&self, tag: &str) -> StoreResult<u64> {
+        self.exec(
+            "UPDATE om_version SET tag = NULL, release_note = NULL WHERE tag = $1",
+            vec![DataValue::String(tag.to_string())],
+        )
+        .await
     }
 
     /// 插入存档行（事务内；rev 去重 + `ON CONFLICT (version) DO NOTHING` 撞号重读重试）。
@@ -260,16 +476,15 @@ impl PgOntologyStore {
         let rev = snapshot_fingerprint(snapshot);
         for _ in 0..3 {
             let latest = self.latest_rev_tx(txn).await?;
-            if let Some((lv, lrev)) = &latest {
-                if lrev == &rev {
+            if let Some((lv, lrev)) = &latest
+                && lrev == &rev {
                     return Ok((*lv, rev, true));
                 }
-            }
             let next = latest.as_ref().map_or(1u32, |(lv, _)| lv.saturating_add(1));
             let n = self
                 .exec_tx(
                     txn,
-                    "INSERT INTO om_version (version, rev, summary, snapshot, published_by, published_at) \
+                    "INSERT INTO om_version (version, rev, summary, snapshot, archived_by, archived_at) \
                      VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (version) DO NOTHING",
                     vec![
                         DataValue::Int(next as i64),
@@ -584,7 +799,7 @@ impl PgOntologyStore {
 
     // ─────────────────── 事务版 exec/query 薄封装 ───────────────────
 
-    async fn exec_tx(&self, txn: &str, sql: &str, params: Vec<DataValue>, ds_id: &str) -> StoreResult<u64> {
+    pub(crate) async fn exec_tx(&self, txn: &str, sql: &str, params: Vec<DataValue>, ds_id: &str) -> StoreResult<u64> {
         let _ = ds_id;
         execute_sql_with_params(&self.db_id, Some(txn), sql, SqlParams::DataValues(params))
             .await
@@ -632,7 +847,7 @@ impl PgOntologyStore {
         Ok(updated)
     }
 
-    async fn query_tx(
+    pub(crate) async fn query_tx(
         &self,
         txn: &str,
         sql: &str,
@@ -664,21 +879,21 @@ fn arr_len(v: Option<&Value>) -> usize {
 
 const OBJECT_DEF_SELECT: &str =
     "SELECT api_name, display_name, description, icon, color, primary_key, title_property, \
-     status, properties, implements, dam, doc_type, datasource, cmx_origin, version FROM om_object_type";
+     status, properties, implements, dam, doc_type, datasource, cmx_origin, version, deprecation_reason, to_char(sunset_at, 'YYYY-MM-DD') AS sunset_at, replacement_api_name, deprecated_at FROM om_object_type";
 const LINK_DEF_SELECT: &str =
     "SELECT api_name, display_name, cardinality, object_type_a, object_type_b, role_a, role_b, \
-     backing, status FROM om_link_type";
+     backing, status, version, deprecation_reason, to_char(sunset_at, 'YYYY-MM-DD') AS sunset_at, replacement_api_name, deprecated_at FROM om_link_type";
 const INTERFACE_DEF_SELECT: &str =
-    "SELECT api_name, display_name, properties, extends, status FROM om_interface";
+    "SELECT api_name, display_name, properties, extends, status, version, deprecation_reason, to_char(sunset_at, 'YYYY-MM-DD') AS sunset_at, replacement_api_name, deprecated_at FROM om_interface";
 const SHARED_DEF_SELECT: &str =
-    "SELECT api_name, display_name, base_type, semantic_type, description FROM om_shared_property";
+    "SELECT api_name, display_name, base_type, semantic_type, description, status, version, deprecation_reason, to_char(sunset_at, 'YYYY-MM-DD') AS sunset_at, replacement_api_name, deprecated_at FROM om_shared_property";
 const ACTION_DEF_SELECT: &str =
     "SELECT api_name, display_name, description, parameters, logic, validations, side_effects, \
-     function_backing, status FROM om_action_type";
+     function_backing, status, version, deprecation_reason, to_char(sunset_at, 'YYYY-MM-DD') AS sunset_at, replacement_api_name, deprecated_at FROM om_action_type";
 const FUNCTION_DEF_SELECT: &str =
-    "SELECT api_name, display_name, runtime, kind, inputs, output, body, description, status FROM om_function";
+    "SELECT api_name, display_name, runtime, kind, inputs, output, body, description, status, version, deprecation_reason, to_char(sunset_at, 'YYYY-MM-DD') AS sunset_at, replacement_api_name, deprecated_at FROM om_function";
 const VIEW_DEF_SELECT: &str =
-    "SELECT api_name, display_name, description, dam, members, source, layout, version FROM om_view";
+    "SELECT api_name, display_name, description, dam, members, source, layout, version, status, deprecation_reason, to_char(sunset_at, 'YYYY-MM-DD') AS sunset_at, replacement_api_name, deprecated_at FROM om_view";
 
 /// 六类批量 upsert：`jsonb_to_recordset`（camelCase 引号别名对位 def 字段）单语句。
 /// created_at 仅插入时定值；version 用快照携带值（保持 B0 链路）。
@@ -754,17 +969,17 @@ ON CONFLICT (api_name) DO UPDATE SET display_name=EXCLUDED.display_name, runtime
      description=EXCLUDED.description, status=EXCLUDED.status, updated_at=EXCLUDED.updated_at"#;
 
 /// views 批量 upsert：**DO UPDATE 有意不含 layout 列**——回滚保留 live 侧布局（layout 豁免双轨）；
-/// 新行 layout 缺省 '{}'（历史快照已剥离 layout）；version 冲突时递增。
+/// 新行 layout 缺省 '{}'（历史快照已剥离 layout）；version 冲突时递增；status 随快照恢复。
 const UPSERT_VIEWS: &str = r#"INSERT INTO om_view
-    (api_name, display_name, description, dam, members, source, layout, version, created_at, updated_at)
+    (api_name, display_name, description, dam, members, source, status, layout, version, created_at, updated_at)
 SELECT "apiName", COALESCE("displayName",''), COALESCE("description",''), COALESCE("dam",'{}'::jsonb),
-     COALESCE("members",'{"objects":[],"interfaces":[]}'::jsonb), COALESCE("source",'manual'),
-     COALESCE("layout",'{}'::jsonb), 1, now(), now()
+     COALESCE("members",'{"objects":[],"interfaces":[],"links":[]}'::jsonb), COALESCE("source",'manual'),
+     COALESCE("status",'experimental'), COALESCE("layout",'{}'::jsonb), 1, now(), now()
 FROM jsonb_to_recordset($1::jsonb) AS x("apiName" text,"displayName" text,"description" text,"dam" jsonb,
-     "members" jsonb,"source" text,"layout" jsonb)
+     "members" jsonb,"source" text,"status" text,"layout" jsonb)
 ON CONFLICT (api_name) DO UPDATE SET display_name=EXCLUDED.display_name, description=EXCLUDED.description,
-     dam=EXCLUDED.dam, members=EXCLUDED.members, source=EXCLUDED.source, version=om_view.version + 1,
-     updated_at=now()"#;
+     dam=EXCLUDED.dam, members=EXCLUDED.members, source=EXCLUDED.source, status=EXCLUDED.status,
+     version=om_view.version + 1, updated_at=now()"#;
 
 // ————————————————————————— 行转换 / 参数助手 —————————————————————————
 
@@ -803,6 +1018,8 @@ fn rows_to_link_defs(ds: &DataSet) -> StoreResult<Vec<LinkTypeDef>> {
                 role_b: get_opt_string(row, s, "role_b").unwrap_or_default(),
                 backing: crate::store::get_json(row, s, "backing").unwrap_or(Value::Null),
                 status: crate::store::parse_status(row, s),
+                version: get_i64(row, s, "version") as u32,
+                deprecation: crate::store::deprecation_from_row(row, s),
             })
         })
         .collect()
@@ -824,6 +1041,8 @@ fn rows_to_interface_defs(ds: &DataSet) -> StoreResult<Vec<InterfaceDef>> {
                     .and_then(|v| serde_json::from_value(v).ok())
                     .unwrap_or_default(),
                 status: crate::store::parse_status(row, s),
+                version: get_i64(row, s, "version") as u32,
+                deprecation: crate::store::deprecation_from_row(row, s),
             })
         })
         .collect()
@@ -839,6 +1058,9 @@ fn rows_to_shared_defs(ds: &DataSet) -> StoreResult<Vec<SharedPropertyTypeDef>> 
                 base_type: crate::store::str_to_enum(&get_opt_string(row, s, "base_type").unwrap_or_default()),
                 semantic_type: get_opt_string(row, s, "semantic_type"),
                 description: get_opt_string(row, s, "description").unwrap_or_default(),
+                status: crate::store::parse_status(row, s),
+                version: get_i64(row, s, "version") as u32,
+                deprecation: crate::store::deprecation_from_row(row, s),
             })
         })
         .collect()
@@ -858,6 +1080,8 @@ fn rows_to_action_defs(ds: &DataSet) -> StoreResult<Vec<ActionTypeDef>> {
                 side_effects: crate::store::get_json(row, s, "side_effects").unwrap_or(Value::Null),
                 function_backing: get_opt_string(row, s, "function_backing"),
                 status: crate::store::parse_status(row, s),
+                version: get_i64(row, s, "version") as u32,
+                deprecation: crate::store::deprecation_from_row(row, s),
             })
         })
         .collect()
@@ -877,6 +1101,8 @@ fn rows_to_function_defs(ds: &DataSet) -> StoreResult<Vec<FunctionDef>> {
                 body: get_opt_string(row, s, "body").unwrap_or_default(),
                 description: get_opt_string(row, s, "description").unwrap_or_default(),
                 status: crate::store::parse_status(row, s),
+                version: get_i64(row, s, "version") as u32,
+                deprecation: crate::store::deprecation_from_row(row, s),
             })
         })
         .collect()
@@ -901,6 +1127,8 @@ fn rows_to_view_defs(ds: &DataSet) -> StoreResult<Vec<SceneViewDef>> {
                 source: crate::view_store::str_to_view_source(&get_opt_string(row, s, "source").unwrap_or_default()),
                 layout: crate::store::get_json(row, s, "layout").unwrap_or(Value::Null),
                 version: get_i64(row, s, "version") as u32,
+                status: crate::store::parse_status(row, s),
+                deprecation: crate::store::deprecation_from_row(row, s),
             })
         })
         .collect()
