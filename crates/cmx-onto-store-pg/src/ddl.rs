@@ -105,7 +105,6 @@ pub const DDL_STATEMENTS: &[&str] = &[
         tag             VARCHAR(64),
         release_note    TEXT
     )"#,
-    "CREATE INDEX IF NOT EXISTS idx_om_version_archived ON om_version (archived_at)",
     // —— 资源级修订历史（方案 20260917 §6.2；七类资源每次保存/流转/恢复同事务追加一条；
     //     deleted 墓碑：资源删除后历史保留可恢复；view 剥离 layout）——
     r#"CREATE TABLE IF NOT EXISTS om_revision (
@@ -270,6 +269,9 @@ pub const DDL_STATEMENTS: &[&str] = &[
            AND NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_om_version_archived') THEN
             ALTER INDEX idx_om_version_published RENAME TO idx_om_version_archived;
         END IF; END $$"#,
+    // 存档时间索引（改名后建——存量库 om_version 走 published_at→archived_at 改名，索引同步改名；
+    // 新库建表即含 archived_at，此处幂等补建）。
+    "CREATE INDEX IF NOT EXISTS idx_om_version_archived ON om_version (archived_at)",
     // 发布标记（方案 §6.4）：tag 唯一（PG 唯一约束允许多行 NULL——匿名检查点不占位）。
     "ALTER TABLE om_version ADD COLUMN IF NOT EXISTS tag VARCHAR(64)",
     "ALTER TABLE om_version ADD COLUMN IF NOT EXISTS release_note TEXT",
