@@ -158,14 +158,13 @@ pub async fn save_view(Json(req): Json<SaveViewReq>) -> Result<Json<ApiResp<Valu
     // links 白名单清洗（方案 §7.2 成员联动）：仅保留真实存在且两端都在成员集内的关系——
     // 移除对象后其边自动出清；写路径单点收口，前端无需先算后传。
     sanitize_view_links(&tenant, &mut def.members).await?;
-    if keep_layout {
-        if let Some(existing) = store()
+    if keep_layout
+        && let Some(existing) = store()
             .get_view(&tenant, &def.api_name)
             .await
             .map_err(|e| OntoError::internal_error(format!("装载场景视图失败: {e}")))?
-        {
-            def.layout = existing.layout;
-        }
+    {
+        def.layout = existing.layout;
     }
     let version = save_view_core(&tenant, def, &crate::handlers::changed_by(), None).await?;
     Ok(Json(ApiResp::ok(
@@ -246,7 +245,12 @@ pub async fn remove_view(Json(req): Json<RemoveViewReq>) -> Result<Json<ApiResp<
         ))));
     }
     let n = store()
-        .delete_view(&tenant, &req.api_name)
+        .delete_with_revision(
+            "view",
+            &req.api_name,
+            current_display_user().as_deref().unwrap_or("anonymous"),
+            Some("删除场景视图"),
+        )
         .await
         .map_err(store_err("删除场景视图失败"))?;
     crate::events::emit(
