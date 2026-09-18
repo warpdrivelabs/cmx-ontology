@@ -352,14 +352,14 @@ pub fn validate_implements(
 
 // ───────────────────────────── 关系类型 ─────────────────────────────
 
-/// 关系基数（有向：oneToMany = 源 1 : 靶 N，manyToOne = 源 N : 靶 1）。
+/// 关系基数（有向：oneToMany = 源 1 : 靶 N）。manyToOne 已废除——与 oneToMany 调换两端
+/// 同义（N:1(A,B) ≡ 1:N(B,A)），建模统一选 1:N 并把多端放 B；反序列化遇 "manyToOne" 拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum LinkCardinality {
     OneToOne,
     #[default]
     OneToMany,
-    ManyToOne,
     ManyToMany,
 }
 
@@ -382,7 +382,7 @@ pub enum LinkEnd {
 ///   对端主键（`oo_<type>.pk` 列，Palantir Key 严格语义）；显式指定 = 与对端
 ///   `props->>'targetProperty'` 属性对属性相等（受控扩展，喂"外键存 code 等自然键"场景；
 ///   注意对象 pk 列与 props 的 id 属性不保证同值）。`side` 缺省按 cardinality 推导
-///   （oneToMany→b、manyToOne→a、oneToOne→a，推导只在本解析层做一次）。
+///   （oneToMany→b、oneToOne→a，推导只在本解析层做一次）。
 /// - `{"joinTable":{"table","leftColumn","rightColumn"}}`：连接表 backing（manyToMany）；
 ///   `leftColumn`↔A 端主键、`rightColumn`↔B 端主键，两列类型须与 `oo_*.pk` 同型（text）。
 /// - `{"intermediary":{"objectType","leftProperty","rightProperty"}}`：中间对象类型 backing
@@ -454,7 +454,7 @@ impl LinkTypeDef {
     ///
     /// **唯一口径 = 页面形状**（`fk` / `joinTable` / `intermediary` 三种顶层键）；旧 tagged
     /// `{"kind":...}` 已废除（落 Edge，保存路径留痕告警）。FK `side` 缺省时按 cardinality
-    /// 在此推导（oneToMany→B、manyToOne→A、oneToOne→A）——推导全工程仅此一处，编译与校验
+    /// 在此推导（oneToMany→B、oneToOne→A）——推导全工程仅此一处，编译与校验
     /// 均消费本结果，显式传值与基数的一致性由 [`Self::validate`] 把关。
     pub fn backing_parsed(&self) -> LinkBacking {
         let v = &self.backing;
@@ -464,7 +464,7 @@ impl LinkTypeDef {
                 Some("a") | Some("A") => LinkEnd::A,
                 // 缺省/非法值：按基数推导（manyToMany + FK 由 validate 拒绝，此处按 many 端推导）。
                 _ => match self.cardinality {
-                    LinkCardinality::ManyToOne | LinkCardinality::OneToOne => LinkEnd::A,
+                    LinkCardinality::OneToOne => LinkEnd::A,
                     _ => LinkEnd::B,
                 },
             };
@@ -543,7 +543,6 @@ impl LinkTypeDef {
                 // 显式 side 与基数的一致性（外键恒在 many 端；缺省 side 已在解析层按基数推导）。
                 let expect = match self.cardinality {
                     LinkCardinality::OneToMany => Some(LinkEnd::B),
-                    LinkCardinality::ManyToOne => Some(LinkEnd::A),
                     LinkCardinality::OneToOne => None,
                     LinkCardinality::ManyToMany => {
                         return Err(crate::Error::Definition(

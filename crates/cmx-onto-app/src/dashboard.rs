@@ -123,7 +123,7 @@ const PAGE: &str = r##"<!doctype html>
         </div>
         <div class="row">
           <div><label>基数</label>
-            <select id="lt_card"><option value="oneToMany">oneToMany</option><option value="manyToOne">manyToOne</option><option value="oneToOne">oneToOne</option><option value="manyToMany">manyToMany</option></select>
+            <select id="lt_card"><option value="oneToMany">oneToMany</option><option value="oneToOne">oneToOne</option><option value="manyToMany">manyToMany</option></select>
           </div>
           <div><label>A→B 角色</label><input id="lt_ra" placeholder="places"/></div>
           <div><label>B→A 角色</label><input id="lt_rb" placeholder="placedBy"/></div>
