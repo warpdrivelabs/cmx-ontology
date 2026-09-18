@@ -33,6 +33,16 @@ fn cfg(env_key: &str, cm_key: &str, default: &str) -> String {
 }
 
 /// POST /flow-callback —— flowengine 事件回调（审批完成 → 回写对象状态）。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/flow-callback",
+    tag = "集成",
+    summary = "流程审批结果回调（flowengine 事件 webhook）",
+    request_body(content = Value, description = "flowengine 生命周期事件"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn receive(Json(event): Json<Value>) -> Result<Json<ApiResp<Value>>> {
     let kind = event.get("event").and_then(|v| v.as_str()).unwrap_or("");
     if kind != "instance.completed" {

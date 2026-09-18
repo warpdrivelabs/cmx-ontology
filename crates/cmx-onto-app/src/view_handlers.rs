@@ -36,6 +36,15 @@ fn store_err(ctx: &'static str) -> impl Fn(cmx_onto_model::StoreError) -> OntoEr
 // ───────────────────────────── 视图 CRUD ─────────────────────────────
 
 /// GET /views —— 场景视图清单（行集 + auto 域默认视图读时派生合并）。
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/views",
+    tag = "场景",
+    summary = "场景清单（live 行 + 域派生虚拟条目合并）",
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn list_views() -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     let rows = store()
@@ -134,6 +143,16 @@ impl Default for SaveViewReq {
 /// POST /views —— **直写 live om_view**（`upsert_view_locked` B0 乐观锁：`version`=0 宽松
 /// 新建/覆盖，非 0 严格行锁——他人保存过 → 409）。同名单覆盖 meta/成员/来源；请求未带布局
 /// （null/空对象）时**保留已有布局**——成员编辑不吞布局。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/views",
+    tag = "场景",
+    summary = "保存场景（新建/覆盖/域播种/成员编辑/转手动）",
+    request_body(content = Value, description = "场景定义"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn save_view(Json(req): Json<SaveViewReq>) -> Result<Json<ApiResp<Value>>> {
     crate::archive_handlers::require_maintainer().await?;
     // 请求未带布局（null/空对象）→ 保留 live 已有布局：成员编辑不吞布局。
@@ -229,6 +248,16 @@ pub struct RemoveViewReq {
 
 /// POST /views/remove —— **直删 live om_view 行**；auto 行豁免（域派生物化产物，成员随域
 /// 自动跟随，删除无意义）。行不存在 → 幂等成功（removed=false）。二次确认由前端承担。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/views/remove",
+    tag = "场景",
+    summary = "删场景（写墓碑修订 + 广播 view-changed）",
+    request_body(content = Value, description = "场景 apiName"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn remove_view(Json(req): Json<RemoveViewReq>) -> Result<Json<ApiResp<Value>>> {
     crate::archive_handlers::require_maintainer().await?;
     let tenant = current_tenant();
@@ -278,6 +307,16 @@ pub struct SaveViewLayoutReq {
 /// 布局是物化产物不进版本语义（rev 指纹排除 layout；发布应用 DO UPDATE 不含 layout 列），
 /// 保存即生效、无需过发布门。写路径授权仍收口（views 写端点组，方案 §六.4）。
 /// auto 视图行不存在时按需落行（meta+layout+source=auto，永不落 members——§2.1 生命周期①）。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/views/layout",
+    tag = "场景",
+    summary = "画布布局单列 LWW 直写",
+    request_body(content = Value, description = "场景 apiName + 布局"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn save_view_layout(
     Json(req): Json<SaveViewLayoutReq>,
 ) -> Result<Json<ApiResp<Value>>> {
@@ -349,6 +388,15 @@ pub struct GraphQuery {
 ///
 /// 响应：`{ view: {...meta}, spec: {name, nodes, edges}, sharedProperties: [...] }`。
 /// 节点附跨场景关系角标数据（externalCount/externalPeers：单端在场的边 → 补引入口）。
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/graph",
+    tag = "场景",
+    summary = "服务端组装成员级画布 spec（一条请求到位）",
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn graph(Query(q): Query<GraphQuery>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     let view_name = q
@@ -609,6 +657,16 @@ pub struct SharedPropertiesBatchReq {
 
 /// POST /shared-properties/batch —— `{items, errors}`（缺失项按清单比对进 errors，响应形状与
 /// object-types/batch 的纯数组不同：A1 新端点自带缺失表达，新页面按清单比对免二次请求）。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/shared-properties/batch",
+    tag = "建模",
+    summary = "按 apiName 批量取共享属性详情",
+    request_body(content = Value, description = "apiName 列表"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn get_shared_properties_batch(
     Json(req): Json<SharedPropertiesBatchReq>,
 ) -> Result<Json<ApiResp<Value>>> {
@@ -646,6 +704,21 @@ pub struct ObjectTypesListQuery {
 
 /// GET /object-types —— 清单：不传参返回全量数组（既有语义）；传 q/dam/page/size 任一
 /// 返回分页信封 `{rows, total, page, size}`（仅新页面目录表格使用）。
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/object-types",
+    tag = "建模",
+    summary = "列出对象类型（双形态）",
+    params(
+        ("q" = Option<String>, Query, description = "关键字过滤（apiName / displayName 模糊）"),
+        ("dam" = Option<String>, Query, description = "DAM 路径过滤（域/应用/模块，逗号分隔段）"),
+        ("page" = Option<u32>, Query, description = "页码（默认 1；仅分页形态）"),
+        ("size" = Option<u32>, Query, description = "页大小（默认 50；仅分页形态）"),
+    ),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn list_object_types(
     Query(qp): Query<ObjectTypesListQuery>,
 ) -> Result<Json<ApiResp<Value>>> {

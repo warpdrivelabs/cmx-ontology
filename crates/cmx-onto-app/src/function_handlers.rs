@@ -35,6 +35,19 @@ pub struct EvalFnReq {
 }
 
 /// POST /functions/{api_name}/evaluate —— 求值一个函数。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/functions/{api_name}/evaluate",
+    tag = "函数",
+    summary = "函数求值：绑定输入 → 执行函数体 → 返回结果",
+    params(
+        ("api_name" = String, Path, description = "资源 API 名"),
+    ),
+    request_body(content = Value, description = "args/objects/objectSets/aggregation/objectSet"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn evaluate_fn(
     Path(api_name): Path<String>,
     Json(req): Json<EvalFnReq>,

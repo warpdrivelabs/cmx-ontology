@@ -32,6 +32,20 @@ pub struct ModifyReq {
 }
 
 /// POST /objects/{type}/{pk}/modify —— 乐观锁修改（读改写；expectedUpdatedAt 版本冲突→conflict）。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/objects/{object_type}/{pk}/modify",
+    tag = "对象存储",
+    summary = "乐观锁修改对象（读改写）",
+    params(
+        ("object_type" = String, Path, description = "对象类型 API 名"),
+        ("pk" = String, Path, description = "对象主键"),
+    ),
+    request_body(content = Value, description = "set 字段 + expectedUpdatedAt"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn modify_object(
     Path((object_type, pk)): Path<(String, String)>,
     Json(req): Json<ModifyReq>,
@@ -52,6 +66,19 @@ pub async fn modify_object(
 }
 
 /// POST /objects/{type} —— upsert 一个对象（按定义校验 + ensure 物化表）。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/objects/{object_type}",
+    tag = "对象存储",
+    summary = "写入/更新一个对象",
+    params(
+        ("object_type" = String, Path, description = "对象类型 API 名"),
+    ),
+    request_body(content = Value, description = "属性值（pk/title 缺省按定义抽取）"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn put_object(
     Path(object_type): Path<String>,
     Json(req): Json<PutObjectReq>,
@@ -75,6 +102,19 @@ pub async fn put_object(
 }
 
 /// POST /objects/{type}/batch —— 批量 upsert（同一事务）。body: [{properties,pk?,title?}, ...]
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/objects/{object_type}/batch",
+    tag = "对象存储",
+    summary = "批量 upsert 对象（同一事务，要么全成要么全败）",
+    params(
+        ("object_type" = String, Path, description = "对象类型 API 名"),
+    ),
+    request_body(content = Value, description = "每项 {properties, pk?, title?}；全部在同一事务提交"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn put_objects_batch(
     Path(object_type): Path<String>,
     Json(items): Json<Vec<PutObjectReq>>,
@@ -103,6 +143,19 @@ pub async fn put_objects_batch(
 }
 
 /// DELETE /objects/{type}/{pk} —— 删除对象（连带清关系边）。
+#[utoipa::path(
+    delete,
+    path = "/api/onto/v1/objects/{object_type}/{pk}",
+    tag = "对象存储",
+    summary = "删除对象（连带清关系边）",
+    params(
+        ("object_type" = String, Path, description = "对象类型 API 名"),
+        ("pk" = String, Path, description = "对象主键"),
+    ),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn delete_object(
     Path((object_type, pk)): Path<(String, String)>,
 ) -> Result<Json<ApiResp<Value>>> {
@@ -115,7 +168,7 @@ pub async fn delete_object(
 }
 
 /// 关系边写入请求体。
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LinkReq {
     pub link: String,
@@ -137,6 +190,16 @@ fn ensure_edge_writable(link: &str, lt: &LinkTypeDef) -> Result<()> {
 }
 
 /// POST /links —— 建立一条关系边（校验关系类型已定义）。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/links",
+    tag = "对象存储",
+    summary = "建立一条关系边",
+    request_body(content = Value, description = "关系边"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn put_link(Json(req): Json<LinkReq>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     let lt = store()
@@ -159,6 +222,15 @@ pub async fn put_link(Json(req): Json<LinkReq>) -> Result<Json<ApiResp<Value>>> 
 }
 
 /// DELETE /links —— 删除一条关系边。body: {link,aPk,bPk}
+#[utoipa::path(
+    delete,
+    path = "/api/onto/v1/links",
+    tag = "对象存储",
+    summary = "删除一条关系边",
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn delete_link(Json(req): Json<LinkReq>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     let lt = store()
@@ -202,6 +274,16 @@ pub struct LoadReq {
 }
 
 /// POST /object-sets/load —— 编译对象集代数为一条 SQL 并加载（读侧硬门 → 分页 → 列脱敏）。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/object-sets/load",
+    tag = "对象存储",
+    summary = "加载对象集（代数编译成一条 SQL，杜绝 N+1）",
+    request_body(content = Value, description = "对象集代数 + 分页 + 主体/场景/状态参数"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn load_object_set(Json(req): Json<LoadReq>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     // 场景 + 状态过滤（§7.3：两校验先于 PEP 权限检查；场景过滤是可见性组织不是权限）。
@@ -248,6 +330,16 @@ pub struct AggregateReq {
 
 /// POST /object-sets/aggregate —— 对象集聚合（读侧硬门 → Count/GroupCount/GroupSum）。
 /// 硬门把行残差折入后再聚合（受限行不计入统计）；deny / 受控无授权 → 403。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/object-sets/aggregate",
+    tag = "对象存储",
+    summary = "对象集聚合（受限行不计入统计）",
+    request_body(content = Value, description = "对象集代数 + 聚合规格"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn aggregate_object_set(Json(req): Json<AggregateReq>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     let scope = crate::filter::SceneScope::resolve(&tenant, req.view.as_deref()).await?;
@@ -282,6 +374,20 @@ pub struct SearchAroundQuery {
     pub include: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/objects/{object_type}/{pk}/links/{link}",
+    tag = "对象存储",
+    summary = "Search-Around：沿关系走到另一头的对象们",
+    params(
+        ("object_type" = String, Path, description = "对象类型 API 名"),
+        ("pk" = String, Path, description = "对象主键"),
+        ("link" = String, Path, description = "关系类型 API 名"),
+    ),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn search_around(
     Path((object_type, pk, link)): Path<(String, String, String)>,
     Query(q): Query<SearchAroundQuery>,

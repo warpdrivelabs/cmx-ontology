@@ -7,9 +7,6 @@
 //!
 //! 两壳复用同一 handler + 同一路由表，零业务漂移。
 
-// openapi.rs 的大 JSON 宏在 clippy 下超默认递归深度（128）——提高到 512。
-#![recursion_limit = "512"]
-
 pub mod auth;
 pub mod dashboard;
 pub mod engine;
@@ -43,7 +40,7 @@ pub mod view_handlers;
 pub use auth::auth as auth_middleware;
 pub use engine::{warm_store, ONTO_DB_ID};
 pub use object_engine::warm_object_store;
-pub use openapi::{openapi_json, swagger_ui};
+pub use openapi::openapi_seed;
 pub use events::events as sse_events;
 pub use resp::{ApiResp, OntoError, Result};
 pub use tenant::{current_tenant, current_user, identity_snapshot};

@@ -25,6 +25,8 @@ cmx-form = { workspace = true }
 cmx-service-base = { workspace = true, features = ["config-manager", "registry-config"] }
 
 axum = { workspace = true }
+# 交互式 API 文档（vendored Swagger UI；文档由 ModuleSet::merged_openapi 聚合）
+utoipa-swagger-ui = { workspace = true }
 tokio = { workspace = true }
 dotenvy = { workspace = true }
 anyhow = { workspace = true }

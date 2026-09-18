@@ -425,6 +425,19 @@ fn ok_response(payload: Value) -> Response {
 }
 
 /// POST /action-types/{api_name}/execute —— 执行动作（校验+编辑+原子写回；dryRun 只预演）。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/action-types/{api_name}/execute",
+    tag = "动作",
+    summary = "执行动作",
+    params(
+        ("api_name" = String, Path, description = "资源 API 名"),
+    ),
+    request_body(content = Value, description = "params + dryRun/actor/subjects"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn execute_action(
     Path(api_name): Path<String>,
     Json(req): Json<ExecuteReq>,
@@ -497,6 +510,19 @@ pub async fn execute_action(
 }
 
 /// POST /action-types/{api_name}/dry-run —— 试算：完整校验链 + 预演，不落业务库（等价 execute + dryRun）。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/action-types/{api_name}/dry-run",
+    tag = "动作",
+    summary = "动作试算（不落库）",
+    params(
+        ("api_name" = String, Path, description = "资源 API 名"),
+    ),
+    request_body(content = Value, description = "params + actor/subjects"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn dry_run_action(
     Path(api_name): Path<String>,
     Json(mut req): Json<ExecuteReq>,
@@ -520,6 +546,16 @@ pub struct CheckPermissionReq {
 /// 口径与执行期 PEP 同源：目标类型由定义静态解析（`resolve_edits` 空参解析失败时回退到
 /// 参数声明派生），复用 `PolicyStore::check_action_permission`（deny_actions 硬门）。
 /// 已知残余风险（方案 §六.2）：函数动作运行期目标类型才可知，预检可能放行但执行 403（硬门兜底）。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/action-types/check-permission",
+    tag = "动作",
+    summary = "动作可见性 PEP 预检（前端据此不渲染被拒按钮）",
+    request_body(content = Value, description = "动作列表 + 主体"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn check_permission(Json(req): Json<CheckPermissionReq>) -> ActionOutcome {
     let tenant = current_tenant();
     let subjects = subjects_of(&req.subjects);
@@ -597,6 +633,16 @@ pub struct BatchItemReq {
 }
 
 /// POST /action-types/execute-batch —— 同事务逐项提交，任一失败全回滚（失败批次单条 failed 审计）。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/action-types/execute-batch",
+    tag = "动作",
+    summary = "同事务批量执行：逐项校验，任一失败整批回滚",
+    request_body(content = Value, description = "apiName + items + dryRun/actor/subjects"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn execute_batch(Json(req): Json<BatchExecuteReq>) -> ActionOutcome {
     let tenant = current_tenant();
     let api_name = req.api_name.trim().to_string();
@@ -678,6 +724,15 @@ pub struct LogQuery {
 }
 
 /// GET /action-logs —— 动作执行审计（最新在前；可 ?action= 过滤）。
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/action-logs",
+    tag = "动作",
+    summary = "动作执行审计流水（最新在前）",
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn list_action_logs(Query(q): Query<LogQuery>) -> Result<Json<ApiResp<Value>>> {
     let limit = q.limit.unwrap_or(50).clamp(1, 500);
     let out = action_executor()
@@ -696,6 +751,15 @@ pub struct OutboxQuery {
 }
 
 /// GET /action-outbox —— 副作用 Outbox（最新在前；可 ?status=pending 过滤）。下游 dispatcher / 运维用。
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/action-outbox",
+    tag = "动作",
+    summary = "副作用 Outbox 列表（最新在前）",
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn list_action_outbox(Query(q): Query<OutboxQuery>) -> Result<Json<ApiResp<Value>>> {
     let limit = q.limit.unwrap_or(100).clamp(1, 1000);
     let out = action_executor()
@@ -714,6 +778,19 @@ pub struct MarkDispatchReq {
 }
 
 /// POST /action-outbox/{id}/dispatched —— dispatcher 投递后回标（ok=true→dispatched；false→failed）。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/action-outbox/{id}/dispatched",
+    tag = "动作",
+    summary = "投递完回标：ok=true→dispatched；false→failed",
+    params(
+        ("id" = String, Path, description = "Outbox 记录 id"),
+    ),
+    request_body(content = Value, description = "回标结果"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn mark_outbox_dispatched(
     Path(id): Path<i64>,
     Json(req): Json<MarkDispatchReq>,
@@ -727,12 +804,30 @@ pub async fn mark_outbox_dispatched(
 
 /// GET /action-outbox/config —— dispatcher 出站配置快照（运维/诊断；不含任何密钥）。
 /// 返回 `{outboundEnabled, flowUrl, flowInstancesPath, webhookAllow}`。
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/action-outbox/config",
+    tag = "动作",
+    summary = "出站配置快照（诊断用，不含密钥）",
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn outbox_config() -> Result<Json<ApiResp<Value>>> {
     Ok(Json(ApiResp::ok(crate::outbound::config_snapshot())))
 }
 
 /// GET /flow/definitions —— 代理 flowengine 已发布流程定义（设计台「触发流程」副作用选择器用）。
 /// flow 不可达时**容错**返回空列表 + error（前端降级为自由输入 flowDefKey）。
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/flow/definitions",
+    tag = "动作",
+    summary = "代理查询流程引擎已发布流程定义",
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn flow_definitions() -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     match crate::outbound::list_flow_definitions(&tenant).await {
@@ -763,6 +858,15 @@ pub async fn flow_definitions() -> Result<Json<ApiResp<Value>>> {
 
 /// GET /report/definitions —— 代理 cmx-report 报表列表（设计台「生成报表」副作用选择器用）。
 /// 容错：report 不可达返回空列表 + error（前端降级为自由输入 reportCode）。
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/report/definitions",
+    tag = "动作",
+    summary = "代理查询报表模块报表列表",
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn report_definitions() -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     match crate::outbound::list_reports(&tenant).await {
@@ -802,6 +906,15 @@ pub async fn report_definitions() -> Result<Json<ApiResp<Value>>> {
 }
 
 /// GET /action-templates —— 内置动作模板清单（前端「从模板新建动作」用；关账联动等预置组合）。
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/action-templates",
+    tag = "动作",
+    summary = "内置动作模板清单",
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn action_templates() -> Result<Json<ApiResp<Value>>> {
     Ok(Json(ApiResp::ok(json!({ "templates": crate::action_templates::templates() }))))
 }
@@ -817,6 +930,15 @@ pub struct DispatchQuery {
 ///
 /// 按 kind 分派：`emitEvent`→SSE 事件流（O7）；`callFunction`→O5 函数求值；`notification`→SSE 通知；
 /// `webhook`→真发 HTTP（受 host 白名单约束）；`startBusinessProcess`→调 cmx-flowengine v1 起实例。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/action-outbox/dispatch",
+    tag = "动作",
+    summary = "手动投递一批 pending 副作用（自动投递之外运维补投用）",
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn dispatch_outbox(Query(q): Query<DispatchQuery>) -> Result<Json<ApiResp<Value>>> {
     let limit = q.limit.unwrap_or(50).clamp(1, 500);
     let (dispatched, deferred, failed) = dispatch_pending_batch(limit)

@@ -48,6 +48,15 @@ pub struct EventsQuery {
 ///
 /// spawn 专用任务持 broadcast Receiver 全程，转发到 mpsc（rx 生命周期独立于 HTTP 流轮询，
 /// 避免流首帧后被 drop 导致 receiver_count=0 收不到后续事件）。
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/events",
+    tag = "实时",
+    summary = "SSE 实时变更流（需认证：Bearer / X-API-Key）",
+    responses(
+        (status = 200, content_type = "text/event-stream", description = "SSE 变更事件流（resource-changed 等；前端 fetch 流式读取）"),
+    )
+)]
 pub async fn events(Query(q): Query<EventsQuery>) -> impl IntoResponse {
     let mut rx = channel().subscribe();
     let want = q.tenant;

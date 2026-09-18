@@ -11,6 +11,16 @@ use cmx_onto_model::{map_dct, map_doc, ObjectStore, OntologyStore};
 use serde_json::{json, Value};
 
 /// POST /import/doc —— DOC（主从实体图）导入为对象类型 + 组合关系。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/import/doc",
+    tag = "集成",
+    summary = "DOC（主从单据元数据）反向导入",
+    request_body(content = Value, description = "归一化 DOC 定义 JSON（map_doc 消费）"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn import_doc(Json(body): Json<Value>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     let imp = map_doc(&body).map_err(OntoError::business_error)?;
@@ -38,6 +48,16 @@ pub async fn import_doc(Json(body): Json<Value>) -> Result<Json<ApiResp<Value>>>
 }
 
 /// POST /import/dct —— DCT（字典）导入为参照对象类型 + 字典项种子对象。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/import/dct",
+    tag = "集成",
+    summary = "DCT（字典元数据）反向导入",
+    request_body(content = Value, description = "归一化 DCT 定义 JSON（map_dct 消费）"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn import_dct(Json(body): Json<Value>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     let imp = map_dct(&body).map_err(OntoError::business_error)?;

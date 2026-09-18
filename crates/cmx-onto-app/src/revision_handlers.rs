@@ -27,6 +27,15 @@ pub struct RevisionsQuery {
 }
 
 /// GET /revisions —— 单资源修订时间线；`deleted=true` 时列出已删除资源。
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/revisions",
+    tag = "治理",
+    summary = "资源修订时间线 / 已删除资源清单",
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn list_revisions(Query(q): Query<RevisionsQuery>) -> Result<Json<ApiResp<Value>>> {
     let s = store();
     if q.deleted.unwrap_or(false) {
@@ -56,6 +65,15 @@ pub struct RevisionDetailQuery {
 }
 
 /// GET /revisions/detail?id= —— 单条修订详情（含 payload）。
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/revisions/detail",
+    tag = "治理",
+    summary = "单条修订详情（含完整 payload 快照）",
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn revision_detail(Query(q): Query<RevisionDetailQuery>) -> Result<Json<ApiResp<Value>>> {
     let detail = store()
         .get_revision_detail(q.id)
@@ -78,6 +96,16 @@ pub struct RevertReq {
 
 /// POST /revisions/revert —— 以旧定义执行一次新保存（历史只追加）；
 /// 资源已删除（墓碑）时升级为创建语义（恢复该资源）。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/revisions/revert",
+    tag = "治理",
+    summary = "git revert 式回滚单条修订（历史只追加）",
+    request_body(content = Value, description = "回滚请求"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn revert(Json(req): Json<RevertReq>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     let kind = req.kind.trim();

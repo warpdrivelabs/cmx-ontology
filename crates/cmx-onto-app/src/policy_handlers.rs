@@ -33,6 +33,15 @@ fn current_subjects() -> Vec<(String, String)> {
 // ————————————————————— 策略 CRUD —————————————————————
 
 /// GET /policies —— 列出全部策略。
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/policies",
+    tag = "安全",
+    summary = "列出全部策略",
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn list_policies() -> Result<Json<ApiResp<Value>>> {
     let out = policy_store()
         .list()
@@ -42,6 +51,16 @@ pub async fn list_policies() -> Result<Json<ApiResp<Value>>> {
 }
 
 /// POST /policies —— upsert 一条策略。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/policies",
+    tag = "安全",
+    summary = "新建/更新策略（行级过滤 + 列脱敏 + 动作拒绝）",
+    request_body(content = Value, description = "策略定义"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn upsert_policy(Json(body): Json<Value>) -> Result<Json<ApiResp<Value>>> {
     let api_name = policy_store()
         .upsert(&body)
@@ -51,6 +70,18 @@ pub async fn upsert_policy(Json(body): Json<Value>) -> Result<Json<ApiResp<Value
 }
 
 /// DELETE /policies/{api_name} —— 删除策略。
+#[utoipa::path(
+    delete,
+    path = "/api/onto/v1/policies/{api_name}",
+    tag = "安全",
+    summary = "删除策略",
+    params(
+        ("api_name" = String, Path, description = "资源 API 名"),
+    ),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn delete_policy(Path(api_name): Path<String>) -> Result<Json<ApiResp<Value>>> {
     let n = policy_store()
         .delete(&api_name)
@@ -83,6 +114,16 @@ pub struct SecureLoadReq {
 }
 
 /// POST /secure/object-sets/load —— 按当前主体的策略加载对象集（行级残差 + 列级脱敏）。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/secure/object-sets/load",
+    tag = "安全",
+    summary = "显式带安全加载（同 /object-sets/load，响应多 appliedPolicies/subjects）",
+    request_body(content = Value, description = "对象集代数 + 分页 + 主体"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn secure_load(Json(req): Json<SecureLoadReq>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     // 场景 + 状态过滤（先于 PEP；与 /object-sets/load 同规则同顺序）。

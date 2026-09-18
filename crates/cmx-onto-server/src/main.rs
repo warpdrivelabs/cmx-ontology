@@ -17,10 +17,11 @@
 
 use cmx_form::serve::{FormPagesModule, PageServeConfig};
 use cmx_onto_app::{
-    ModuleSet, OntoCoreModule, OntoError, OntoV1Module, openapi_json, warm_object_store,
-    warm_store, ONTO_DB_ID,
+    ModuleSet, OntoCoreModule, OntoError, OntoV1Module, openapi_seed, warm_object_store, warm_store,
+    ONTO_DB_ID,
 };
 use cmx_web_chassis::{run, BannerSpec, ChassisConfig, ServiceSpec};
+use utoipa_swagger_ui::SwaggerUi;
 
 /// onto 专属字符画。
 const ONTO_ART: &str = r#"
@@ -131,12 +132,17 @@ async fn main() -> cmx_web_chassis::Result<()> {
 ///
 /// 返回**未加层**的路由器——main 按现状序「observe（内）→ auth（外）」加层；契约测试
 /// 直接探测本函数（auth 中间件对无凭证请求统一 401，会掩盖 405/404 区分）。
-fn build_authed_router() -> axum::Router {
+/// 模块清单（**唯一装配真源**）：路由 `fold()` 与文档 `merged_openapi()` 同源驱动，
+/// 漏挂模块 = 路由与文档一起丢。
+fn build_modules() -> ModuleSet<()> {
     ModuleSet::<()>::new(vec![])
         // v1 在前、旧前缀在后：与改造前 `onto_routes_v1().merge(onto_routes())` 顺序一致。
         .with(Box::new(OntoV1Module))
         .with(Box::new(OntoCoreModule))
-        .fold()
+}
+
+fn build_authed_router() -> axum::Router {
+    build_modules().fold()
 }
 
 /// open 切片：前端页只读投递（native；门户 F3 反代 portal.onto.* 取页请求到此，免认证）。
@@ -153,25 +159,29 @@ fn build_open_router() -> axum::Router {
     ))).fold()
 }
 
-/// 全量装配：根级控制台 + `/api`（authed 切片 + open 切片 + 公开文档）。
+/// 全量装配：根级控制台 + `/api`（authed 切片 + open 切片）+ 交互文档（根级全外路径）。
 ///
-/// openapi.json 与 Swagger UI（O7）挂在 api_router 上、authed 子树之外（URL 含 `/api`
-/// 前缀，免认证公开文档），**不得挪到 app_router 根**（会丢 `/api` 前缀致消费方 404）。
+/// openapi.json 与 Swagger UI（O7）挂在**根路由器**、authed 子树之外（免认证公开文档，
+/// 对齐 cmx-flow-server 同款写法）——SwaggerUi 是自带路由的 Router，若并进 api_router
+/// 再被 `nest("/api")` 会叠加成 `/api/api/…`（404），故必须全外路径根级挂载。
 fn build_app_router() -> axum::Router {
     let authed = build_authed_router()
         .layer(axum::middleware::from_fn(cmx_web_monitor::observe))
         .layer(axum::middleware::from_fn(cmx_onto_app::auth_middleware));
     let api_router = axum::Router::new()
         .merge(authed)
-        .merge(build_open_router())
-        .route("/onto/v1/openapi.json", axum::routing::get(openapi_json))
-        // O7 headless：Swagger UI 免认证层。SSE（/events）P2 起注册进鉴权路由
-        //（onto_routes_v1 内；标准 Bearer 鉴权，前端以 fetch 流式读取消费 SSE）——
-        // 原免认证挂载移除（方案 §七）。
-        .route("/onto/v1/docs", axum::routing::get(cmx_onto_app::swagger_ui));
+        .merge(build_open_router());
     axum::Router::new()
         // 根 → 本体建模控制台（免认证，前端 fetch /api/onto/v1/*）。
         .route("/", axum::routing::get(cmx_onto_app::dashboard::dashboard))
+        // O7 headless 交互文档（免认证层）：handler `#[utoipa::path]` 注解派生 +
+        // `merged_openapi` 按模块清单聚合，vendored Swagger UI 离线可用。SSE（/events）
+        // P2 起注册进鉴权路由（onto_routes_v1 内；标准 Bearer 鉴权，前端以 fetch
+        // 流式读取消费 SSE）——原免认证挂载移除（方案 §七）。
+        .merge(
+            SwaggerUi::new("/api/onto/v1/docs")
+                .url("/api/onto/v1/openapi.json", build_modules().merged_openapi(openapi_seed())),
+        )
         .nest("/api", api_router)
 }
 
@@ -196,12 +206,14 @@ mod route_contract {
     const AUTHED: &[&str] = &["/onto/v1/events"];
 
     /// open / 根级（改造前 main.rs 挂载清单：控制台、公开文档、页面端点）。
-    const OPEN_OR_ROOT: &[&str] = &[
-        "/",
-        "/api/onto/v1/openapi.json",
-        "/api/onto/v1/docs",
-        "/api/native-pages",
-        "/api/native-pages/probe-id",
+    /// (method, path)：文档两路径是 SwaggerUi 内部路由（仅注册 GET），用 GET 探测；
+    /// 其余仍用 OPTIONS（命中已有路径返回 405 方法不符，不触发 handler）。
+    const OPEN_OR_ROOT: &[(&str, &str)] = &[
+        ("OPTIONS", "/"),
+        ("GET", "/api/onto/v1/openapi.json"),
+        ("GET", "/api/onto/v1/docs"),
+        ("OPTIONS", "/api/native-pages"),
+        ("OPTIONS", "/api/native-pages/probe-id"),
     ];
 
     async fn probe(router: Router, method: &str, path: &str) -> StatusCode {
@@ -225,8 +237,8 @@ mod route_contract {
     #[tokio::test]
     async fn open_and_root_paths_mounted() {
         let router = build_app_router();
-        for path in OPEN_OR_ROOT {
-            let status = probe(router.clone(), "OPTIONS", path).await;
+        for (method, path) in OPEN_OR_ROOT {
+            let status = probe(router.clone(), method, path).await;
             assert_ne!(status, StatusCode::NOT_FOUND, "open/根级路径丢失: {path}");
         }
     }

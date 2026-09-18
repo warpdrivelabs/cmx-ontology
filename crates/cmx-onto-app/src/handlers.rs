@@ -21,6 +21,19 @@ use serde_json::{json, Value};
 // 旧设计器不传参仍得全量数组（零破坏），新页面目录表格走分页信封。
 
 /// GET /object-types/{apiName} —— 对象类型详情（含完整属性）。
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/object-types/{api_name}",
+    tag = "建模",
+    summary = "对象类型完整定义（含全部属性）",
+    params(
+        ("api_name" = String, Path, description = "对象类型 API 名"),
+    ),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+        (status = 404, description = "资源不存在"),
+    )
+)]
 pub async fn get_object_type(Path(api_name): Path<String>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     let def = store()
@@ -40,6 +53,16 @@ pub async fn get_object_type(Path(api_name): Path<String>) -> Result<Json<ApiRes
 pub struct ObjectTypesBatchReq {
     pub api_names: Vec<String>,
 }
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/object-types/batch",
+    tag = "建模",
+    summary = "按 apiName 批量取对象类型完整定义",
+    request_body(content = Value, description = "{ apiNames: string[] }（≤2000）"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn get_object_types_batch(
     Json(req): Json<ObjectTypesBatchReq>,
 ) -> Result<Json<ApiResp<Value>>> {
@@ -73,6 +96,16 @@ fn stripped_warnings(body: &Value) -> Vec<String> {
     w
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/object-types",
+    tag = "建模",
+    summary = "新建/更新对象类型",
+    request_body(content = Value, description = "对象类型定义 ObjectTypeDef；status/deprecation 被剥离（流转走 /lifecycle/transition）"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn save_object_type(Json(body): Json<Value>) -> Result<Json<ApiResp<Value>>> {
     let warnings = stripped_warnings(&body);
     let def: ObjectTypeDef = serde_json::from_value(body)
@@ -167,6 +200,16 @@ async fn validate_object_implements(tenant: &str, def: &ObjectTypeDef) -> Result
 }
 
 /// POST /object-types/validate —— 仅结构校验（不落库）。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/object-types/validate",
+    tag = "建模",
+    summary = "只校验对象类型（不落库）",
+    request_body(content = Value, description = "待校验的对象类型定义 ObjectTypeDef"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn validate_object_type(Json(def): Json<ObjectTypeDef>) -> Result<Json<ApiResp<Value>>> {
     match def.validate() {
         Ok(()) => Ok(Json(ApiResp::ok(json!({ "valid": true })))),
@@ -178,6 +221,20 @@ pub async fn validate_object_type(Json(def): Json<ObjectTypeDef>) -> Result<Json
 
 /// DELETE /object-types/{apiName} —— 删除对象类型。
 /// 安全网：①被引用（关系/动作编辑/场景成员）→ 409 出引用清单；②删除前自动存档（可撤销）。
+#[utoipa::path(
+    delete,
+    path = "/api/onto/v1/object-types/{api_name}",
+    tag = "建模",
+    summary = "删除对象类型",
+    params(
+        ("api_name" = String, Path, description = "对象类型 API 名"),
+    ),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+        (status = 404, description = "资源不存在"),
+        (status = 409, description = "active 保护或仍被引用"),
+    )
+)]
 pub async fn delete_object_type(Path(api_name): Path<String>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     let existing = store()
@@ -243,6 +300,15 @@ async fn auto_snapshot_before(op: &str, name: &str) {
 
 // ───────────────────────────── 关系类型 ─────────────────────────────
 
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/link-types",
+    tag = "建模",
+    summary = "列出关系类型（摘要，含两端 DAM 富化）",
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn list_link_types() -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     let metas = store()
@@ -252,6 +318,18 @@ pub async fn list_link_types() -> Result<Json<ApiResp<Value>>> {
     Ok(Json(ApiResp::ok(json!(metas))))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/link-types/{api_name}",
+    tag = "建模",
+    summary = "关系类型完整定义",
+    params(
+        ("api_name" = String, Path, description = "资源 API 名"),
+    ),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn get_link_type(Path(api_name): Path<String>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     let def = store()
@@ -279,6 +357,16 @@ fn log_backing_fk_gaps(api_name: &str, backing: &Value) {
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/link-types",
+    tag = "建模",
+    summary = "新建/更新关系类型",
+    request_body(content = Value, description = "关系类型定义"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn save_link_type(Json(body): Json<Value>) -> Result<Json<ApiResp<Value>>> {
     let warnings = stripped_warnings(&body);
     let def: LinkTypeDef = serde_json::from_value(body)
@@ -404,6 +492,18 @@ async fn ensure_object_registered(tenant: &str, api_name: &str, label: &str) -> 
     Ok(())
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/onto/v1/link-types/{api_name}",
+    tag = "建模",
+    summary = "删除关系类型",
+    params(
+        ("api_name" = String, Path, description = "资源 API 名"),
+    ),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn delete_link_type(Path(api_name): Path<String>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     let existing = store()
@@ -453,6 +553,15 @@ pub struct InterfacesListQuery {
 
 /// GET /interfaces —— 清单：不传参返回全量数组（既有语义）；传 q/page/size 任一
 /// 返回分页信封 `{rows, total, page, size}`。
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/interfaces",
+    tag = "建模",
+    summary = "列出接口（双形态）",
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn list_interfaces(Query(qp): Query<InterfacesListQuery>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     let paged = qp.q.is_some() || qp.page.is_some() || qp.size.is_some();
@@ -481,6 +590,18 @@ pub async fn list_interfaces(Query(qp): Query<InterfacesListQuery>) -> Result<Js
     }))))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/interfaces/{api_name}",
+    tag = "建模",
+    summary = "接口完整定义",
+    params(
+        ("api_name" = String, Path, description = "资源 API 名"),
+    ),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn get_interface(Path(api_name): Path<String>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     let def = store()
@@ -491,6 +612,16 @@ pub async fn get_interface(Path(api_name): Path<String>) -> Result<Json<ApiResp<
     Ok(Json(ApiResp::ok(json!(def))))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/interfaces",
+    tag = "建模",
+    summary = "新建/更新接口",
+    request_body(content = Value, description = "接口定义"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn save_interface(Json(body): Json<Value>) -> Result<Json<ApiResp<Value>>> {
     let warnings = stripped_warnings(&body);
     let def: InterfaceDef = serde_json::from_value(body)
@@ -519,6 +650,18 @@ pub(crate) async fn save_interface_core(
     Ok(version)
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/onto/v1/interfaces/{api_name}",
+    tag = "建模",
+    summary = "删除接口",
+    params(
+        ("api_name" = String, Path, description = "资源 API 名"),
+    ),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn delete_interface(Path(api_name): Path<String>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     ensure_deletable("interface", &api_name).await?;
@@ -566,6 +709,15 @@ pub struct SharedPropertiesListQuery {
 /// GET /shared-properties —— 清单：不传参返回全量轻量 meta 数组（既有语义）；
 /// 传 q/page/size 任一返回分页信封 `{rows, total, page, size}`（rows 为完整定义，
 /// 含 baseType/semanticType——选择器免逐个 GET 详情）。
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/shared-properties",
+    tag = "建模",
+    summary = "列出共享属性（双形态）",
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn list_shared_properties(
     Query(qp): Query<SharedPropertiesListQuery>,
 ) -> Result<Json<ApiResp<Value>>> {
@@ -596,6 +748,18 @@ pub async fn list_shared_properties(
     }))))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/shared-properties/{api_name}",
+    tag = "建模",
+    summary = "共享属性完整定义",
+    params(
+        ("api_name" = String, Path, description = "资源 API 名"),
+    ),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn get_shared_property(Path(api_name): Path<String>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     let def = store()
@@ -606,6 +770,16 @@ pub async fn get_shared_property(Path(api_name): Path<String>) -> Result<Json<Ap
     Ok(Json(ApiResp::ok(json!(def))))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/shared-properties",
+    tag = "建模",
+    summary = "新建/更新共享属性",
+    request_body(content = Value, description = "共享属性定义"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn save_shared_property(Json(body): Json<Value>) -> Result<Json<ApiResp<Value>>> {
     let warnings = stripped_warnings(&body);
     let def: SharedPropertyTypeDef = serde_json::from_value(body)
@@ -636,6 +810,18 @@ pub(crate) async fn save_shared_core(
 
 /// DELETE /shared-properties/{apiName} —— 删除共享属性。
 /// 安全网：①被引用（对象属性/接口契约）→ 409 出引用清单；②删除前自动存档（可撤销）。
+#[utoipa::path(
+    delete,
+    path = "/api/onto/v1/shared-properties/{api_name}",
+    tag = "建模",
+    summary = "删除共享属性",
+    params(
+        ("api_name" = String, Path, description = "资源 API 名"),
+    ),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn delete_shared_property(Path(api_name): Path<String>) -> Result<Json<ApiResp<Value>>> {
     ensure_deletable("shared_property", &api_name).await?;
     let refs = store()
@@ -670,6 +856,15 @@ pub async fn delete_shared_property(Path(api_name): Path<String>) -> Result<Json
 
 // ───────────────────────────── 动作类型 ─────────────────────────────
 
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/action-types",
+    tag = "建模",
+    summary = "列出动作类型（摘要）",
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn list_action_types() -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     let metas = store()
@@ -679,6 +874,18 @@ pub async fn list_action_types() -> Result<Json<ApiResp<Value>>> {
     Ok(Json(ApiResp::ok(json!(metas))))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/action-types/{api_name}",
+    tag = "建模",
+    summary = "动作类型完整定义",
+    params(
+        ("api_name" = String, Path, description = "资源 API 名"),
+    ),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn get_action_type(Path(api_name): Path<String>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     let def = store()
@@ -689,6 +896,16 @@ pub async fn get_action_type(Path(api_name): Path<String>) -> Result<Json<ApiRes
     Ok(Json(ApiResp::ok(json!(def))))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/action-types",
+    tag = "建模",
+    summary = "新建/更新动作类型",
+    request_body(content = Value, description = "动作类型定义"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn save_action_type(Json(body): Json<Value>) -> Result<Json<ApiResp<Value>>> {
     let warnings = stripped_warnings(&body);
     let mut def: ActionTypeDef = serde_json::from_value(body)
@@ -759,6 +976,18 @@ pub(crate) async fn save_action_core(
     Ok(version)
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/onto/v1/action-types/{api_name}",
+    tag = "建模",
+    summary = "删除动作类型",
+    params(
+        ("api_name" = String, Path, description = "资源 API 名"),
+    ),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn delete_action_type(Path(api_name): Path<String>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     ensure_deletable("action", &api_name).await?;
@@ -775,6 +1004,15 @@ pub async fn delete_action_type(Path(api_name): Path<String>) -> Result<Json<Api
 
 // ───────────────────────────── 函数 ─────────────────────────────
 
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/functions",
+    tag = "建模",
+    summary = "列出函数（摘要）",
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn list_functions() -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     let metas = store()
@@ -784,6 +1022,18 @@ pub async fn list_functions() -> Result<Json<ApiResp<Value>>> {
     Ok(Json(ApiResp::ok(json!(metas))))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/functions/{api_name}",
+    tag = "建模",
+    summary = "函数完整定义",
+    params(
+        ("api_name" = String, Path, description = "资源 API 名"),
+    ),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn get_function(Path(api_name): Path<String>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     let def = store()
@@ -794,6 +1044,16 @@ pub async fn get_function(Path(api_name): Path<String>) -> Result<Json<ApiResp<V
     Ok(Json(ApiResp::ok(json!(def))))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/functions",
+    tag = "建模",
+    summary = "新建/更新函数",
+    request_body(content = Value, description = "函数定义"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn save_function(Json(body): Json<Value>) -> Result<Json<ApiResp<Value>>> {
     let warnings = stripped_warnings(&body);
     let def: FunctionDef = serde_json::from_value(body)
@@ -822,6 +1082,18 @@ pub(crate) async fn save_function_core(
     Ok(version)
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/onto/v1/functions/{api_name}",
+    tag = "建模",
+    summary = "删除函数",
+    params(
+        ("api_name" = String, Path, description = "资源 API 名"),
+    ),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn delete_function(Path(api_name): Path<String>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     ensure_deletable("function", &api_name).await?;
@@ -867,6 +1139,15 @@ fn normalize_manifest_type(raw: &str) -> Option<&'static str> {
 
 /// GET /manifest —— 本体全量清单；`?types=` 按类型子集；`?include=` 状态分层（D9）；
 /// `?view=` 场景六段口径（§7.3：成员类型 / 场景内关系 / 派生动作函数 / 派生共享属性）。
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/manifest",
+    tag = "建模",
+    summary = "本体全量清单（六类元素摘要一次全给）",
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn manifest(Query(q): Query<ManifestQuery>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     let filter = crate::filter::StatusFilter::parse(q.include.as_deref())?;
@@ -1005,6 +1286,15 @@ fn filter_manifest(m: &mut Value, filter: &crate::filter::StatusFilter, scope: O
 }
 
 /// GET /versions —— 存档版本列表（降序）。
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/versions",
+    tag = "治理",
+    summary = "检查点版本列表（新→旧）",
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn list_versions() -> Result<Json<ApiResp<Value>>> {
     let versions = store()
         .list_versions()
@@ -1014,6 +1304,18 @@ pub async fn list_versions() -> Result<Json<ApiResp<Value>>> {
 }
 
 /// GET /versions/{version} —— 某版本发布快照（全量定义）。
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/versions/{version}",
+    tag = "治理",
+    summary = "某版本完整快照",
+    params(
+        ("version" = String, Path, description = "版本标识（/versions 列表条目）"),
+    ),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn get_version(Path(version): Path<u32>) -> Result<Json<ApiResp<Value>>> {
     let snap = store()
         .get_version(version)

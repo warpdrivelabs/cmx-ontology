@@ -26,6 +26,8 @@ cmx-engine-kit = { workspace = true }
 cmx-dataauth-core = { workspace = true }
 
 axum = { workspace = true }
+# OpenAPI 契约：handler #[utoipa::path] 注解 + derive(OpenApi) 切片聚合
+utoipa = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

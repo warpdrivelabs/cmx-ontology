@@ -69,6 +69,10 @@ rhai = { version = "1.20", features = ["serde", "sync"] }
 # 开发 profile：debug = 1 仅保留行号表（backtrace 仍有文件名+行号可定位），裁掉默认的全量
 # DWARF（debug = 2）——链接更快、target 体积大幅缩小。需要调试器检视变量（gdb/lldb print
 # 结构体字段）时临时改回 debug = 2 重编译即可；其余项保持 Cargo dev 默认，不显式覆盖。
+# OpenAPI 注解派生（handler #[utoipa::path] 自包含）+ vendored Swagger UI（离线可开）
+utoipa = { version = "5", features = ["axum_extras", "chrono"] }
+utoipa-swagger-ui = { version = "9", features = ["axum", "vendored"] }
+
 [profile.dev]
 debug = 1
 

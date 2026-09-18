@@ -15,6 +15,15 @@ fn funnel() -> FunnelStore {
 }
 
 /// GET /funnel/mappings —— 列出源映射。
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/funnel/mappings",
+    tag = "集成",
+    summary = "列出源→对象映射",
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn list_mappings() -> Result<Json<ApiResp<Value>>> {
     let out = funnel()
         .list_mappings()
@@ -24,6 +33,16 @@ pub async fn list_mappings() -> Result<Json<ApiResp<Value>>> {
 }
 
 /// POST /funnel/mappings —— upsert 源映射。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/funnel/mappings",
+    tag = "集成",
+    summary = "新建/更新映射",
+    request_body(content = Value, description = "映射定义"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn upsert_mapping(Json(body): Json<Value>) -> Result<Json<ApiResp<Value>>> {
     let ot = funnel()
         .upsert_mapping(&body)
@@ -33,6 +52,18 @@ pub async fn upsert_mapping(Json(body): Json<Value>) -> Result<Json<ApiResp<Valu
 }
 
 /// DELETE /funnel/mappings/{object_type} —— 删除映射。
+#[utoipa::path(
+    delete,
+    path = "/api/onto/v1/funnel/mappings/{object_type}",
+    tag = "集成",
+    summary = "删除某对象类型的映射",
+    params(
+        ("object_type" = String, Path, description = "对象类型 API 名"),
+    ),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn delete_mapping(Path(object_type): Path<String>) -> Result<Json<ApiResp<Value>>> {
     let n = funnel()
         .delete_mapping(&object_type)
@@ -42,6 +73,18 @@ pub async fn delete_mapping(Path(object_type): Path<String>) -> Result<Json<ApiR
 }
 
 /// POST /funnel/sync/{object_type} —— 全量同步（读源→映射→合格 upsert，违规入隔离区）。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/funnel/sync/{object_type}",
+    tag = "集成",
+    summary = "全量同步：读源 → 映射转换 → 合格写入对象库，违规进隔离区",
+    params(
+        ("object_type" = String, Path, description = "对象类型 API 名"),
+    ),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn run_sync(Path(object_type): Path<String>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     let report = funnel()
@@ -66,6 +109,15 @@ pub struct QuarantineQuery {
 }
 
 /// GET /funnel/quarantine —— 隔离区（校验不通过的源行 + violations）。
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/funnel/quarantine",
+    tag = "集成",
+    summary = "隔离区：违规源行 + violations 原因",
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn list_quarantine(Query(q): Query<QuarantineQuery>) -> Result<Json<ApiResp<Value>>> {
     let limit = q.limit.unwrap_or(100).clamp(1, 1000);
     let out = funnel()
@@ -76,6 +128,18 @@ pub async fn list_quarantine(Query(q): Query<QuarantineQuery>) -> Result<Json<Ap
 }
 
 /// GET /funnel/pipeline-status/{object_type} —— 管道图（抽取/映射/索引三段 + 计数）。
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/funnel/pipeline-status/{object_type}",
+    tag = "集成",
+    summary = "管道状态图数据（抽取/映射/索引三段计数）",
+    params(
+        ("object_type" = String, Path, description = "对象类型 API 名"),
+    ),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn pipeline_status(Path(object_type): Path<String>) -> Result<Json<ApiResp<Value>>> {
     let out = funnel()
         .pipeline_status(&object_type)
@@ -104,6 +168,16 @@ fn query_touches_table(source_query: &str, dict_code: &str) -> bool {
 /// 收到激活事件后按 `dictCode` 定位命中映射的漏斗（sourceQuery 含 `cm_{dict_code}`）并自动
 /// 全量同步——主数据变更免手动 sync。body 宽容：只消费 `dictCode`/`dict_code`，其余透传忽略；
 /// `dictCode` 缺省时全量同步所有映射。幂等可重入（sync 本身按 pk upsert）。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/funnel/push",
+    tag = "集成",
+    summary = "MDM 主数据事件推送入口（分发引擎 webhook 订阅）",
+    request_body(content = Value, description = "MDM 事件负载（宽容消费：只读 dictCode/dict_code，其余透传忽略）"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn funnel_push(Json(body): Json<Value>) -> Result<Json<ApiResp<Value>>> {
     let dict_code = body
         .get("dictCode")

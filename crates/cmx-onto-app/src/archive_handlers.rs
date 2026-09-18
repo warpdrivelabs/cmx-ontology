@@ -69,6 +69,15 @@ async fn is_maintainer() -> Result<bool> {
 }
 
 /// GET /me/roles —— 当前用户角色/权限码（无守卫：人人可查自己的角色）。
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/me/roles",
+    tag = "治理",
+    summary = "当前用户角色/权限码（无守卫）",
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn me_roles() -> Result<Json<ApiResp<Value>>> {
     let maintainer = is_maintainer().await?;
     Ok(Json(ApiResp::ok(json!({
@@ -92,6 +101,16 @@ pub struct SnapshotReq {
 
 /// POST /snapshots —— 存档：当前 live 全量快照 → om_version 检查点。
 /// rev 与最新版本相同 → 去重不插行（响应 `deduped: true`）；并发安全（事务内撞号重试）。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/snapshots",
+    tag = "治理",
+    summary = "存档：当前 live 全量快照 → om_version 检查点",
+    request_body(content = Value, description = "存档说明"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn create_snapshot(Json(req): Json<SnapshotReq>) -> Result<Json<ApiResp<Value>>> {
     require_maintainer().await?;
     let tenant = current_tenant();
@@ -126,6 +145,15 @@ pub struct VersionsDiffQuery {
 }
 
 /// GET /versions/diff?a=&b= —— 服务端元素级 diff（含视图维度）。
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/versions/diff",
+    tag = "治理",
+    summary = "服务端元素级 diff（含场景维度）",
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn versions_diff(Query(q): Query<VersionsDiffQuery>) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
     let va = resolve_snapshot(&tenant, &q.a).await?;
@@ -171,6 +199,16 @@ pub struct RestoreReq {
 /// POST /versions/restore —— 回滚 = 历史快照整体恢复回 live（无草稿中转）：
 /// 校验（结构/引用，Error 阻断）→ 大规模删除护栏 → 单事务应用（六类 upsert + views +
 /// 派生删除 + 级联）→ 回滚留痕存档（「回滚到 v{n}」，与 live 全等则去重不插）→ SSE 广播。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/versions/restore",
+    tag = "治理",
+    summary = "回滚：历史快照整体恢复回 live",
+    request_body(content = Value, description = "回滚请求"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn versions_restore(Json(req): Json<RestoreReq>) -> Result<Json<ApiResp<Value>>> {
     require_maintainer().await?;
     let tenant = current_tenant();
@@ -280,6 +318,16 @@ fn validate_tag(tag: &str) -> Result<()> {
 
 /// POST /releases —— 发布 = 给检查点起名：跑发布门禁（experimental / deprecated 警告清单）→
 /// 打全量检查点并置 tag。软中带硬：警告可 acknowledge 放行（治理动作，D2 自洽）。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/releases",
+    tag = "治理",
+    summary = "命名发布标记：给检查点起名",
+    request_body(content = Value, description = "发布请求"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn create_release(Json(req): Json<ReleaseReq>) -> Result<Json<ApiResp<Value>>> {
     require_maintainer().await?;
     let tenant = current_tenant();
@@ -357,6 +405,16 @@ pub struct ReleaseRemoveReq {
 }
 
 /// POST /releases/remove —— 解除发布标记（只清 tag，不删检查点行）。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/releases/remove",
+    tag = "治理",
+    summary = "解除发布标记（只清 tag，不删检查点行）",
+    request_body(content = Value, description = "发布标记名"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn remove_release(Json(req): Json<ReleaseRemoveReq>) -> Result<Json<ApiResp<Value>>> {
     require_maintainer().await?;
     let n = store()

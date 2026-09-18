@@ -17,6 +17,15 @@ pub struct OsdkQuery {
 }
 
 /// GET /osdk/typescript —— 生成 TypeScript OSDK（强类型对象接口 + 客户端；默认仅 active）。
+#[utoipa::path(
+    get,
+    path = "/api/onto/v1/osdk/typescript",
+    tag = "工具",
+    summary = "按当前本体生成 TypeScript 客户端代码",
+    responses(
+        (status = 200, content_type = "text/typescript", description = "TypeScript OSDK 单文件源码"),
+    )
+)]
 pub async fn typescript_sdk(Query(q): Query<OsdkQuery>) -> Result<Response> {
     let tenant = current_tenant();
     let s = store();

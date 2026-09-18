@@ -70,6 +70,16 @@ pub struct TransitionOutcome {
 }
 
 /// POST /lifecycle/transition —— 七类资源状态流转。
+#[utoipa::path(
+    post,
+    path = "/api/onto/v1/lifecycle/transition",
+    tag = "治理",
+    summary = "七类资源状态流转唯一入口",
+    request_body(content = Value, description = "流转请求"),
+    responses(
+        (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
+    )
+)]
 pub async fn transition(Json(req): Json<TransitionReq>) -> Result<Json<ApiResp<Value>>> {
     crate::archive_handlers::require_maintainer().await?;
     let tenant = current_tenant();
