@@ -15,6 +15,14 @@ db_type = "postgres"
 db_url = "postgres://dbuser_dba:9lWsRQY4i4VToPpkHcCRFzki@192.168.157.46:5432/cmx_fico"
 default = true
 
+# 方案 20260918：虚拟直查业务源（dev 与本体库同库演示；生产指向独立业务库，source_type = "biz"）
+[[databases]]
+db_id = "fico-db"
+db_name = "FICO 业务源"
+db_type = "postgres"
+db_url = "postgres://dbuser_dba:9lWsRQY4i4VToPpkHcCRFzki@192.168.157.46:5432/cmx_fico"
+source_type = "biz"
+
 [auth]
 mode = "jwt"                # 生产务必 jwt（off 模式租户取 X-Tenant 头，越权隐患；且委托令牌无法验签，用户身份断链）
 tenancy = "single"

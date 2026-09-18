@@ -246,7 +246,7 @@ impl PgOntologyStore {
             .query(
                 &format!(
                     "SELECT api_name, display_name, status, primary_key, \
-                     jsonb_array_length(properties) AS pc, properties, implements, dam, doc_type, version, updated_at \
+                     jsonb_array_length(properties) AS pc, properties, implements, dam, doc_type, version, updated_at, datasource \
                      FROM om_object_type{where_sql} \
                      ORDER BY updated_at DESC LIMIT ${} OFFSET ${}",
                     params.len() - 1,
@@ -513,5 +513,7 @@ fn object_meta_from_row(row: &Row, s: &Schema) -> StoreResult<ObjectTypeMeta> {
         version: get_i64(row, s, "version") as u32,
         updated_at: get_opt_ts(row, s, "updated_at"),
         deprecation: deprecation_from_row(row, s),
+        datasource: get_opt_json(row, s, "datasource")
+            .and_then(|v| serde_json::from_value(v).ok()),
     })
 }

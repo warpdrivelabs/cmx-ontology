@@ -12,6 +12,7 @@ pub mod store;
 pub mod view;
 
 pub mod action;
+pub mod backend;
 pub mod feel;
 pub mod rhai_engine;
 pub mod function;
@@ -41,7 +42,12 @@ pub use action::{
 pub use feel::{eval_expression, eval_predicate, FeelError};
 pub use function::{evaluate as evaluate_function, input_specs, check_inputs, InputSpec, FunctionError};
 pub use authz::{residual_set, redact_rows};
-pub use funnel::{map_row, MappedObject, SourceMapping, SyncReport, Violation};
+pub use backend::{
+    AggKind, AlgebraCaps, BackendCaps, BackendCtx, BackendKind, ObjectDataBackend, PredicateKind,
+    ProbeReport, TotalMode, PK_BRIDGE_MAX,
+};
+pub use def::DataSourceBinding;
+pub use funnel::{map_row, MappedObject, MappingMode, SourceMapping, SyncReport, Violation};
 pub use import::{map_doc, map_dct, DocImport, DctImport};
 pub use osdk::generate_typescript;
 

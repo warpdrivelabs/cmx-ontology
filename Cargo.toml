@@ -65,6 +65,8 @@ dotenvy = "0.15"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # O5 函数 Rhai runtime（过程式逃生舱；沙箱 max_operations/call_levels，features 对齐 cmx-rulesengine）
 rhai = { version = "1.20", features = ["serde", "sync"] }
+# M0 S2 止血：漏斗 sourceQuery 静态校验（单语句纯 SELECT 判定；版本对齐 cmx-container 根 0.49）
+sqlparser = "0.49"
 
 # 开发 profile：debug = 1 仅保留行号表（backtrace 仍有文件名+行号可定位），裁掉默认的全量
 # DWARF（debug = 2）——链接更快、target 体积大幅缩小。需要调试器检视变量（gdb/lldb print

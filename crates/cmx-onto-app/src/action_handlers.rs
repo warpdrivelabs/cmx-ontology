@@ -109,6 +109,12 @@ async fn load_param_objects(
             continue;
         }
         let set = ObjectSet::Static { object_type: ot.to_string(), primary_keys: pks };
+        // E3 内部读路径守卫：virtual 类型参数装载显式拒绝（防静默空集假结果）——
+        // 此处函数签名返回 Value，守卫失败即跳过注入并告警（执行期由校验/引用侧承担）。
+        if let Err(e) = crate::backend_dispatcher::ensure_set_internal_loadable(tenant, &set).await {
+            tracing::warn!(object_type = %ot, error = %e, "动作参数装载引用虚拟类型，已跳过注入（E3）");
+            continue;
+        }
         let lr = link_resolver();
         let page = object_store()
             .load(tenant, &set, &Page { limit: 500, offset: 0 }, &lr)
@@ -158,7 +164,16 @@ fn scalar_pk(v: &Value) -> Option<String> {
 async fn load_edit_target_objects(
     tenant: &str,
     edits: &[ObjectEdit],
-) -> BTreeMap<(String, String), Value> {
+) -> Result<BTreeMap<(String, String), Value>> {
+    // E3 编辑预装载守卫：编辑目标含 virtual 类型 → 显式拒绝（虚拟对象不可写、装载必空集误导校验）。
+    for e in edits {
+        if let ObjectEdit::ModifyObject { object_type, .. }
+        | ObjectEdit::UpsertObject { object_type, .. }
+        | ObjectEdit::DeleteObject { object_type, .. } = e
+        {
+            crate::backend_dispatcher::ensure_writable(tenant, object_type).await?;
+        }
+    }
     // 按 (objectType) 聚合 pk 再装载，避免 N 次单查
     let mut wanted: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for e in edits {
@@ -194,7 +209,7 @@ async fn load_edit_target_objects(
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// 由编辑 + 当前值构建 proposedChanges（对象条目带 from→to diff；链接条目平铺）。
@@ -479,7 +494,9 @@ pub async fn execute_action(
     }
 
     // 编辑目标当前值（proposedChanges 的 from；dry-run 预读、execute 亦预读供前端展示）
-    let before = load_edit_target_objects(&tenant, &resolved.edits).await;
+    let before = load_edit_target_objects(&tenant, &resolved.edits)
+        .await
+        .map_err(|e| ActionErr::business(e.to_string()))?;
     let proposed = build_proposed_changes(&resolved.edits, &before);
     let preview: Vec<Value> = resolved
         .effects
@@ -685,7 +702,9 @@ pub async fn execute_batch(Json(req): Json<BatchExecuteReq>) -> ActionOutcome {
     pep_check(&targets, &api_name, &subjects, &[]).await?;
 
     if req.dry_run {
-        let before = load_edit_target_objects(&tenant, &all_edits).await;
+        let before = load_edit_target_objects(&tenant, &all_edits)
+            .await
+            .map_err(|e| ActionErr::business(e.to_string()))?;
         let proposed = build_proposed_changes(&all_edits, &before);
         return Ok(ok_response(json!({
             "action": api_name, "dryRun": true, "items": items.len(),

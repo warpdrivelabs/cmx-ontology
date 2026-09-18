@@ -57,6 +57,39 @@ pub struct DeprecationMeta {
     pub deprecated_at: Option<DateTime<Utc>>,
 }
 
+/// 背书数据源展示指针（方案 20260918 §5.6）：`{sourceId, mode, resource}`。
+///
+/// **非权威**（E1）：绑定权威真源是 `om_source_mapping` 行；本指针仅 manifest/Inspector 快速展示，
+/// bind/unbind 时同步维护。普通 save 剥离（E2，学 deprecation 先例）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DataSourceBinding {
+    /// 数据源 id（M1a = toml `[[databases]]` db_id；M1b 起 = om_data_source.id）。
+    #[serde(default)]
+    pub source_id: String,
+    /// 绑定模式（"materialized" | "virtual"；与 om_source_mapping.mode 同值域）。
+    #[serde(default)]
+    pub mode: String,
+    /// 源资源名（PG `schema.table` 或 API 资源名；materialized 且走手写 SQL 时可空）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
+}
+
+/// datasource 容错反序列化：非标形状（历史占位/外来写入）→ None，不让指针脏数据阻断定义装载。
+fn deserialize_binding_tolerant<'de, D>(d: D) -> Result<Option<DataSourceBinding>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = Option::<Value>::deserialize(d)?;
+    Ok(v.and_then(|v| serde_json::from_value(v).ok()))
+}
+
+/// 展示指针 → 落库 jsonb（store 层列写入口共用；None → 列 NULL）。
+pub fn datasource_to_json(ds: &Option<DataSourceBinding>) -> Option<Value> {
+    ds.as_ref()
+        .map(|b| serde_json::to_value(b).unwrap_or(Value::Null))
+}
+
 /// 兼容矩阵判定（方案 20260917 §5.4；对齐 Palantir
 /// ConflictBetweenLinkTypeStatusAndObjectTypeStatus，按"任一端"穷尽 9 组合）。
 ///
@@ -210,8 +243,15 @@ pub struct ObjectTypeDef {
     #[serde(default)]
     pub implements: Vec<String>,
     /// 背书数据源（O3 Funnel 从哪里灌；此处保留原始 JSON）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub datasource: Option<Value>,
+    /// 方案 20260918 §5.6：降为**展示指针** `{sourceId, mode, resource}`——非权威（派发只读
+    /// om_source_mapping 行）；普通 save 剥离防旁路（E2），唯一写入口 = bind/unbind API。
+    /// 反序列化容错：历史/外来非标形状 → None（不因指针脏数据阻断整个定义装载）。
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_binding_tolerant"
+    )]
+    pub datasource: Option<DataSourceBinding>,
     /// 若由 cmx-model DOC/DCT 生成，回指来源。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cmx_origin: Option<Value>,
@@ -800,6 +840,10 @@ pub struct ObjectTypeMeta {
     /// 弃用元数据（explorer 悬停 / Inspector 查看 / 发布门禁警告清单摘录；非 deprecated 为 None）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deprecation: Option<DeprecationMeta>,
+    /// 数据源展示指针（清单富化，方案 20260918 §5.6）：explorer「直查」徽章 / studio 目录角标
+    /// 据此判定虚拟类型，免逐类型二次请求。权威真源在 om_source_mapping（E1），此处仅展示。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub datasource: Option<DataSourceBinding>,
 }
 
 /// 关系类型清单项。
