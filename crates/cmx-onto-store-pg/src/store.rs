@@ -152,7 +152,7 @@ impl PgOntologyStore {
                         json_arr(&def.implements),
                         DataValue::Json(serde_json::to_string(&def.dam).unwrap_or_else(|_| "{}".to_string())),
                         DataValue::Json(serde_json::to_string(&def.doc_type).unwrap_or_else(|_| "{}".to_string())),
-                        opt_json(&def.datasource),
+                        opt_json(&cmx_onto_model::datasource_to_json(&def.datasource)),
                         opt_json(&def.cmx_origin),
                         DataValue::DateTime(now),
                     ],
@@ -185,7 +185,7 @@ impl PgOntologyStore {
                     json_arr(&def.implements),
                     DataValue::Json(serde_json::to_string(&def.dam).unwrap_or_else(|_| "{}".to_string())),
                     DataValue::Json(serde_json::to_string(&def.doc_type).unwrap_or_else(|_| "{}".to_string())),
-                    opt_json(&def.datasource),
+                    opt_json(&cmx_onto_model::datasource_to_json(&def.datasource)),
                     opt_json(&def.cmx_origin),
                     DataValue::DateTime(now),
                     DataValue::Int(def.version as i64),
@@ -351,7 +351,7 @@ impl OntologyStore for PgOntologyStore {
                 json_arr(&def.implements),
                 DataValue::Json(serde_json::to_string(&def.dam).unwrap_or_else(|_| "{}".to_string())),
                 DataValue::Json(serde_json::to_string(&def.doc_type).unwrap_or_else(|_| "{}".to_string())),
-                opt_json(&def.datasource),
+                opt_json(&cmx_onto_model::datasource_to_json(&def.datasource)),
                 opt_json(&def.cmx_origin),
                 DataValue::DateTime(now),
             ],
@@ -387,7 +387,7 @@ impl OntologyStore for PgOntologyStore {
             .query(
                 "SELECT api_name, display_name, status, primary_key, \
                  jsonb_array_length(properties) AS pc, properties, implements, dam, doc_type, version, updated_at, \
-                 deprecation_reason, to_char(sunset_at, 'YYYY-MM-DD') AS sunset_at, replacement_api_name, deprecated_at \
+                 deprecation_reason, to_char(sunset_at, 'YYYY-MM-DD') AS sunset_at, replacement_api_name, deprecated_at, datasource \
                  FROM om_object_type ORDER BY updated_at DESC",
                 vec![],
                 "om_object_type_list",
@@ -415,6 +415,8 @@ impl OntologyStore for PgOntologyStore {
                 version: get_i64(row, s, "version") as u32,
                 updated_at: get_opt_ts(row, s, "updated_at"),
                 deprecation: deprecation_from_row(row, s),
+                datasource: get_opt_json(row, s, "datasource")
+                    .and_then(|v| serde_json::from_value(v).ok()),
             });
         }
         Ok(out)
@@ -972,7 +974,7 @@ pub(crate) fn object_def_from_row(row: &Row, s: &Schema) -> StoreResult<ObjectTy
         implements,
         dam: get_opt_json(row, s, "dam").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
         doc_type: get_opt_json(row, s, "doc_type").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
-        datasource: get_opt_json(row, s, "datasource"),
+        datasource: get_opt_json(row, s, "datasource").and_then(|v| serde_json::from_value(v).ok()),
         cmx_origin: get_opt_json(row, s, "cmx_origin"),
         version: get_i64(row, s, "version") as u32,
         deprecation: deprecation_from_row(row, s),

@@ -5,13 +5,12 @@
 //! + 收集 deny_markings → 对返回行按对象类型定义的属性 marking 脱敏。
 
 use crate::engine::store;
-use crate::object_engine::{link_resolver, object_store};
 use crate::resp::{ApiResp, OntoError, Result};
 use crate::tenant::{current_tenant, current_user};
 use axum::extract::Path;
 use axum::Json;
 use cmx_onto_model::objectset::{ObjectSet, Page};
-use cmx_onto_model::{redact_rows, residual_set, ObjectStore, OntologyStore};
+use cmx_onto_model::{redact_rows, residual_set, OntologyStore};
 use cmx_onto_store_pg::PolicyStore;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -170,8 +169,8 @@ pub async fn secure_load(Json(req): Json<SecureLoadReq>) -> Result<Json<ApiResp<
         limit: req.limit.unwrap_or(100),
         offset: req.offset.unwrap_or(0),
     };
-    let mut page_out = object_store()
-        .load(&tenant, &secured_set, &page, &link_resolver())
+    // 读路径分派：虚拟类型同样受策略门约束（残差折入后随下推编译生效，E7/R3）。
+    let mut page_out = crate::backend_dispatcher::load(&tenant, &secured_set, &page)
         .await
         .map_err(|e| OntoError::internal_error(format!("加载对象集失败: {e}")))?;
 
@@ -197,11 +196,10 @@ async fn marking_map(tenant: &str, object_type: &str) -> HashMap<String, String>
     let mut map = HashMap::new();
     if let Ok(Some(def)) = store().get_object_type(tenant, object_type).await {
         for p in &def.properties {
-            if let Some(mk) = &p.marking {
-                if !mk.is_empty() {
+            if let Some(mk) = &p.marking
+                && !mk.is_empty() {
                     map.insert(p.api_name.clone(), mk.clone());
                 }
-            }
         }
     }
     map

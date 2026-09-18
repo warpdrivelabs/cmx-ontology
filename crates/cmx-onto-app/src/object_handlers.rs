@@ -50,6 +50,7 @@ pub async fn modify_object(
     Path((object_type, pk)): Path<(String, String)>,
     Json(req): Json<ModifyReq>,
 ) -> Result<Json<ApiResp<Value>>> {
+    crate::backend_dispatcher::ensure_writable(&current_tenant(), &object_type).await?;
     let (status, updated_at, props) = object_store()
         .modify_with_optlock(&object_type, &pk, &req.set, req.expected_updated_at.as_deref())
         .await
@@ -84,6 +85,7 @@ pub async fn put_object(
     Json(req): Json<PutObjectReq>,
 ) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
+    crate::backend_dispatcher::ensure_writable(&tenant, &object_type).await?;
     let def = store()
         .get_object_type(&tenant, &object_type)
         .await
@@ -120,6 +122,7 @@ pub async fn put_objects_batch(
     Json(items): Json<Vec<PutObjectReq>>,
 ) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
+    crate::backend_dispatcher::ensure_writable(&tenant, &object_type).await?;
     let def = store()
         .get_object_type(&tenant, &object_type)
         .await
@@ -160,6 +163,7 @@ pub async fn delete_object(
     Path((object_type, pk)): Path<(String, String)>,
 ) -> Result<Json<ApiResp<Value>>> {
     let tenant = current_tenant();
+    crate::backend_dispatcher::ensure_writable(&tenant, &object_type).await?;
     let n = object_store()
         .delete_object(&tenant, &object_type, &pk)
         .await
@@ -208,6 +212,9 @@ pub async fn put_link(Json(req): Json<LinkReq>) -> Result<Json<ApiResp<Value>>> 
         .map_err(|e| OntoError::internal_error(format!("装载关系类型失败: {e}")))?
         .ok_or_else(|| OntoError::business_error(format!("关系类型 {} 未定义", req.link)))?;
     ensure_edge_writable(&req.link, &lt)?;
+    // E3：涉及 virtual 端的边写入拒绝（虚拟类型只读、无人灌边）。
+    crate::backend_dispatcher::ensure_writable(&tenant, &lt.object_type_a).await?;
+    crate::backend_dispatcher::ensure_writable(&tenant, &lt.object_type_b).await?;
     let edge = LinkEdge {
         link: req.link.clone(),
         a_pk: req.a_pk,
@@ -239,6 +246,8 @@ pub async fn delete_link(Json(req): Json<LinkReq>) -> Result<Json<ApiResp<Value>
         .map_err(|e| OntoError::internal_error(format!("装载关系类型失败: {e}")))?
         .ok_or_else(|| OntoError::business_error(format!("关系类型 {} 未定义", req.link)))?;
     ensure_edge_writable(&req.link, &lt)?;
+    crate::backend_dispatcher::ensure_writable(&tenant, &lt.object_type_a).await?;
+    crate::backend_dispatcher::ensure_writable(&tenant, &lt.object_type_b).await?;
     let edge = LinkEdge {
         link: req.link.clone(),
         a_pk: req.a_pk,
@@ -305,11 +314,8 @@ pub async fn load_object_set(Json(req): Json<LoadReq>) -> Result<Json<ApiResp<Va
         limit: req.limit.unwrap_or(100),
         offset: req.offset.unwrap_or(0),
     };
-    let lr = link_resolver();
-    let mut page_out = object_store()
-        .load(&tenant, &secured_set, &page, &lr)
-        .await
-        .map_err(|e| OntoError::internal_error(format!("加载对象集失败: {e}")))?;
+    // 读路径分派：按绑定选 backend（virtual=下推；物化=整树快路径；跨源组合 pk 桥接）。
+    let mut page_out = crate::backend_dispatcher::load(&tenant, &secured_set, &page).await?;
     mask_plan.apply(&mut page_out.rows);
     Ok(Json(ApiResp::ok(json!(page_out))))
 }
@@ -354,11 +360,8 @@ pub async fn aggregate_object_set(Json(req): Json<AggregateReq>) -> Result<Json<
     let subjects = crate::pep::subjects_from(&req.subjects);
     let (secured_set, _mask) =
         crate::pep::enforce_read(&tenant, &subjects, &terminal, req.object_set.clone()).await?;
-    let lr = link_resolver();
-    let out = object_store()
-        .aggregate(&tenant, &secured_set, &req.aggregation, &lr)
-        .await
-        .map_err(|e| OntoError::internal_error(format!("聚合失败: {e}")))?;
+    // 读路径分派（口径同 load）：虚拟类型聚合下推源库。
+    let out = crate::backend_dispatcher::aggregate(&tenant, &secured_set, &req.aggregation).await?;
     Ok(Json(ApiResp::ok(out)))
 }
 
@@ -426,10 +429,8 @@ pub async fn search_around(
     let subjects = crate::pep::subjects_from(&[]);
     let (secured_set, mask_plan) =
         crate::pep::enforce_read(&tenant, &subjects, &terminal, set).await?;
-    let mut page_out = object_store()
-        .load(&tenant, &secured_set, &Page::default(), &lr)
-        .await
-        .map_err(|e| OntoError::internal_error(format!("Search-Around 失败: {e}")))?;
+    // 读路径分派：跨源 SearchAround 由分派器 pk 桥接（virtual 端解析 pk 集 → Static 下推）。
+    let mut page_out = crate::backend_dispatcher::load(&tenant, &secured_set, &Page::default()).await?;
     mask_plan.apply(&mut page_out.rows);
     Ok(Json(ApiResp::ok(json!(page_out))))
 }

@@ -104,6 +104,16 @@ use utoipa::openapi::{InfoBuilder, OpenApi as OpenApiDoc, OpenApiBuilder};
         crate::flow_callback_handlers::receive,
         crate::osdk_handlers::typescript_sdk,
         crate::stats::stats,
+        // —— 方案 20260918：对象数据源绑定 + 注册表 ——
+        crate::source_handlers::get_datasource,
+        crate::source_handlers::bind_datasource,
+        crate::source_handlers::unbind_datasource,
+        crate::source_handlers::list_data_sources,
+        crate::source_handlers::create_data_source,
+        crate::source_handlers::update_data_source,
+        crate::source_handlers::delete_data_source,
+        crate::source_handlers::probe_data_source,
+        crate::source_handlers::source_schema,
     )
 )]
 pub struct OntoV1ApiDoc;
@@ -143,6 +153,7 @@ pub fn openapi_seed() -> OpenApiDoc {
             tag("函数", "O5 函数求值"),
             tag("安全", "O6 动态安全：策略 CRUD + 带安全的对象集加载"),
             tag("集成", "O3 数据集成：源映射 / 全量同步 / 隔离区 / 管道状态 + MDM 事件推送"),
+            tag("数据源", "对象数据源绑定（bind/unbind 唯一写入口）+ 数据源注册表（pg/api；probe/结构反射）"),
             tag("实时", "O7 SSE 变更流"),
             tag("工具", "OSDK 代码生成 / 建模台监控数据源"),
         ]))
@@ -261,11 +272,11 @@ mod api_contract {
         ]
     }
 
-    /// 扫描基线：68 条路由、16 对双方法 = 84 操作。
+    /// 扫描基线：73 条路由、17 对双方法 = 93 操作（方案 20260918 +9：绑定三端点 + 注册表六端点）。
     #[test]
     fn scan_count_matches_baseline() {
         let reg = registered();
-        assert_eq!(reg.len(), 84, "路由操作扫描数偏离基线 84（68 路径）——路由表变更后须同步 #[utoipa::path] 注解与文档入册");
+        assert_eq!(reg.len(), 93, "路由操作扫描数偏离基线 93（73 路径）——路由表变更后须同步 #[utoipa::path] 注解与文档入册");
     }
 
     /// 双向相等：已注册未注解与已注解未注册都算漂移。

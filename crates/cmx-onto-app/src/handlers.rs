@@ -93,6 +93,9 @@ fn stripped_warnings(body: &Value) -> Vec<String> {
     if body.get("deprecation").is_some() {
         w.push("deprecation 已忽略：弃用元数据只能经 POST /lifecycle/transition 维护".to_string());
     }
+    if body.get("datasource").is_some() {
+        w.push("datasource 已忽略：数据源绑定只能经 POST /object-types/datasource/bind|unbind 维护（E2）".to_string());
+    }
     w
 }
 
@@ -101,15 +104,18 @@ fn stripped_warnings(body: &Value) -> Vec<String> {
     path = "/api/onto/v1/object-types",
     tag = "建模",
     summary = "新建/更新对象类型",
-    request_body(content = Value, description = "对象类型定义 ObjectTypeDef；status/deprecation 被剥离（流转走 /lifecycle/transition）"),
+    request_body(content = Value, description = "对象类型定义 ObjectTypeDef；status/deprecation/datasource 被剥离（流转 /lifecycle/transition；数据源绑定走 /object-types/datasource/bind）"),
     responses(
         (status = 200, description = "统一信封 {code,msg,data}", body = ApiResp<Value>),
     )
 )]
 pub async fn save_object_type(Json(body): Json<Value>) -> Result<Json<ApiResp<Value>>> {
     let warnings = stripped_warnings(&body);
-    let def: ObjectTypeDef = serde_json::from_value(body)
+    let mut def: ObjectTypeDef = serde_json::from_value(body)
         .map_err(|e| OntoError::bad_request(format!("对象类型请求体非法: {e}")))?;
+    // E2 数据源绑定旁路剥离：指针唯一写入口是 bind/unbind API；普通 save 恒不带
+    // （save_object_core 对存量类型会回填库内现值，普通保存不动绑定）。
+    def.datasource = None;
     let tenant = current_tenant();
     let version = save_object_core(&tenant, def, None).await?;
     Ok(Json(ApiResp::ok(json!({
@@ -143,6 +149,24 @@ pub(crate) async fn save_object_core(
             "active 资源不可修改主键属性，请先降级到 experimental / deprecated",
         ));
     }
+    // 数据源指针保留库内现值（E2：普通保存不动绑定，含 v=0 盲写 upsert——v0 SQL 的
+    // DO UPDATE 会覆盖 datasource 列，故必须先回填；新建类型查无 existing 即 None）。
+    let def = if def.datasource.is_none() {
+        match store()
+            .get_object_type(tenant, &def.api_name)
+            .await
+            .map_err(|e| OntoError::internal_error(format!("装载对象类型失败: {e}")))?
+        {
+            Some(existing) if existing.datasource.is_some() => {
+                let mut d = def;
+                d.datasource = existing.datasource;
+                d
+            }
+            _ => def,
+        }
+    } else {
+        def
+    };
     let version = store()
         .save_object_with_revision(&def, &changed_by(), change_note)
         .await
@@ -349,7 +373,8 @@ fn log_backing_fk_gaps(api_name: &str, backing: &Value) {
         return;
     }
     let Some(fk) = backing.get("fk") else { return };
-    for key in ["sourceProperty"] {
+    {
+        let key = "sourceProperty";
         let v = fk.get(key).and_then(|x| x.as_str()).map(str::trim).unwrap_or("");
         if v.is_empty() {
             tracing::warn!(link = %api_name, field = key, "backing.fk 缺 {key}（映射不完整，速建气泡/关系 Inspector 应补齐）");

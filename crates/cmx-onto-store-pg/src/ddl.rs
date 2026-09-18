@@ -287,6 +287,29 @@ pub const DDL_STATEMENTS: &[&str] = &[
         subject_kind    VARCHAR(16)  NOT NULL DEFAULT 'user',
         created_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
     )"#,
+    // —— 方案 20260918（对象数据源统一抽象）：om_source_mapping 升格 = 绑定唯一权威行（E1）——
+    // mode = 读路径来源（materialized=物化灌数 / virtual=虚拟直查下推）；漏斗建的映射恒 materialized，
+    // virtual 只能经 POST /object-types/datasource/bind 建立。幂等补列 + 存量回填（DDL DEFAULT 不覆盖
+    // 存量行，需显式 UPDATE，B-P2-3）。
+    "ALTER TABLE om_source_mapping ADD COLUMN IF NOT EXISTS mode VARCHAR(16) NOT NULL DEFAULT 'materialized'",
+    "ALTER TABLE om_source_mapping ADD COLUMN IF NOT EXISTS resource VARCHAR(256)",
+    r#"UPDATE om_source_mapping SET mode = 'materialized' WHERE mode IS NULL"#,
+    // M1b 数据源注册表（方案 §5.4）：kind ∈ pg|api|connector；config 按 kind 承载连接/端点配置
+    // （凭证只存环境变量引用名，绝不落明文）；caps 声明能力矩阵（pg 源由实现内置，可空）。
+    r#"CREATE TABLE IF NOT EXISTS om_data_source (
+        id            VARCHAR(128) PRIMARY KEY,
+        name          VARCHAR(200) NOT NULL,
+        kind          VARCHAR(16)  NOT NULL,
+        config        JSONB        NOT NULL,
+        caps          JSONB,
+        status        VARCHAR(16)  NOT NULL DEFAULT 'active',
+        last_probe_at TIMESTAMPTZ,
+        probe_report  JSONB,
+        created_at    TIMESTAMPTZ  NOT NULL DEFAULT now(),
+        updated_at    TIMESTAMPTZ  NOT NULL DEFAULT now()
+    )"#,
+    // 映射行 → 注册表 id（M1b 起泛化寻址；读取优先 source_id、空则回退 source_db_id，Q6 双读）。
+    "ALTER TABLE om_source_mapping ADD COLUMN IF NOT EXISTS source_id VARCHAR(128)",
 ];
 
 /// 一次性清理（幂等）：已废弃表随启动重放删除（直改 live 架构移除草稿工作区；
@@ -318,7 +341,7 @@ pub const DDL_COMMENTS: &[&str] = &[
     "COMMENT ON TABLE om_link_type IS '关系类型定义（对象类型间的关系；Search-Around 的路径）'",
     "COMMENT ON COLUMN om_link_type.api_name IS '稳定 API 名（唯一锚）'",
     "COMMENT ON COLUMN om_link_type.display_name IS '显示名'",
-    "COMMENT ON COLUMN om_link_type.cardinality IS '关系基数：oneToOne / oneToMany（默认）/ manyToOne / manyToMany'",
+    "COMMENT ON COLUMN om_link_type.cardinality IS '关系基数：oneToOne / oneToMany（默认）/ manyToMany（manyToOne 已废除 = oneToMany 调换两端）'",
     "COMMENT ON COLUMN om_link_type.object_type_a IS 'A 端对象类型 apiName'",
     "COMMENT ON COLUMN om_link_type.object_type_b IS 'B 端对象类型 apiName'",
     "COMMENT ON COLUMN om_link_type.role_a IS 'A→B 方向角色名（如 places）'",
@@ -467,9 +490,9 @@ pub const DDL_COMMENTS: &[&str] = &[
     "COMMENT ON COLUMN om_policy.status IS '策略状态：active 生效（默认）'",
     "COMMENT ON COLUMN om_policy.created_at IS '创建时间'",
     // —— O3 数据集成：源→对象映射 ——
-    "COMMENT ON TABLE om_source_mapping IS 'O3 数据集成：源→对象映射（持久化映射定义，支持复跑全量同步）'",
+    "COMMENT ON TABLE om_source_mapping IS '源→对象映射（方案 20260918 升格 = 绑定唯一权威行：mode=materialized 漏斗灌数 / mode=virtual 虚拟直查下推）'",
     "COMMENT ON COLUMN om_source_mapping.object_type IS '目标对象类型 apiName（主键，一对象一映射）'",
-    "COMMENT ON COLUMN om_source_mapping.source_query IS '源查询 SQL（全量同步时执行读源行）'",
+    "COMMENT ON COLUMN om_source_mapping.source_query IS '源查询 SQL（物化全量同步读源用；可空 = 由 resource+映射生成参数化 SELECT；虚拟映射恒空）'",
     "COMMENT ON COLUMN om_source_mapping.key_columns IS '业务键列名 jsonb 数组（源行 upsert 对象的键）'",
     "COMMENT ON COLUMN om_source_mapping.title_column IS '标题列名（映射对象 titleProperty；可空）'",
     "COMMENT ON COLUMN om_source_mapping.property_map IS '源列→属性映射 jsonb 数组'",
@@ -477,6 +500,14 @@ pub const DDL_COMMENTS: &[&str] = &[
     "COMMENT ON COLUMN om_source_mapping.last_sync_at IS '最近全量同步时间（可空 = 未同步过）'",
     "COMMENT ON COLUMN om_source_mapping.last_report IS '最近一次同步报告 jsonb（合格/隔离/失败计数等）'",
     "COMMENT ON COLUMN om_source_mapping.created_at IS '创建时间'",
+    "COMMENT ON COLUMN om_source_mapping.mode IS '绑定模式 = 读路径来源（E1 权威值）：materialized 物化 / virtual 虚拟直查'",
+    "COMMENT ON COLUMN om_source_mapping.resource IS '源资源名（PG 表名 schema.table 或 API 资源名；生成式查询与下推的取数对象）'",
+    "COMMENT ON COLUMN om_source_mapping.source_id IS 'om_data_source.id（M1b 注册表寻址；读取优先于 source_db_id）'",
+    "COMMENT ON TABLE om_data_source IS '数据源注册表（M1b）：pg|api|connector；凭证只存环境变量引用名不落明文'",
+    "COMMENT ON COLUMN om_data_source.kind IS '数据源类型：pg / api / connector（预留）'",
+    "COMMENT ON COLUMN om_data_source.config IS 'kind 相关配置 jsonb（pg: ref 池名或独立连接；api: baseUrl/auth/分页协议；凭证仅环境变量名）'",
+    "COMMENT ON COLUMN om_data_source.caps IS '声明的能力矩阵 jsonb（api 源必填；pg 源实现内置可空）'",
+    "COMMENT ON COLUMN om_data_source.probe_report IS '最近探测报告 jsonb（连通/版本/列基线——schema 漂移比对依据）'",
     // —— O3 隔离区 ——
     "COMMENT ON TABLE oo_quarantine IS 'O3 隔离区：Funnel 校验不通过的源行（不污染主对象库，供修复后重放）'",
     "COMMENT ON COLUMN oo_quarantine.id IS '自增主键'",

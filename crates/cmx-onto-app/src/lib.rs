@@ -13,6 +13,7 @@ pub mod engine;
 pub mod handlers;
 pub mod action_handlers;
 pub mod action_templates;
+pub mod backend_dispatcher;
 pub mod archive_handlers;
 pub mod function_handlers;
 pub mod function_runtime;
@@ -32,6 +33,7 @@ pub mod openapi;
 pub mod outbound;
 pub mod pep;
 pub mod resp;
+pub mod source_handlers;
 pub mod stats;
 pub mod tenancy;
 pub mod tenant;
@@ -158,6 +160,28 @@ where
         .route("/versions/diff", get(archive_handlers::versions_diff))
         .route("/versions/restore", post(archive_handlers::versions_restore))
         .route("/me/roles", get(archive_handlers::me_roles))
+        // —— 方案 20260918：对象数据源绑定（唯一写入口 E2；bind 走修订链）——
+        .route(
+            "/object-types/datasource",
+            get(source_handlers::get_datasource),
+        )
+        .route(
+            "/object-types/datasource/bind",
+            post(source_handlers::bind_datasource),
+        )
+        .route(
+            "/object-types/datasource/unbind",
+            post(source_handlers::unbind_datasource),
+        )
+        // —— 方案 20260918 M1b：数据源注册表（CRUD + probe 先测后存 + 结构反射）——
+        .route(
+            "/data-sources",
+            get(source_handlers::list_data_sources).post(source_handlers::create_data_source),
+        )
+        .route("/data-sources/update", post(source_handlers::update_data_source))
+        .route("/data-sources/delete", post(source_handlers::delete_data_source))
+        .route("/data-sources/probe", post(source_handlers::probe_data_source))
+        .route("/data-sources/schema", get(source_handlers::source_schema))
         // —— O7 实时（P2 注册进鉴权路由；标准 Bearer 鉴权，前端 fetch 流式读取消费 SSE）——
         .route("/events", get(sse_events))
         // —— O2 对象层：对象写入 ——

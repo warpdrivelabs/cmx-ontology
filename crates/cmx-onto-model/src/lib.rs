@@ -12,6 +12,7 @@ pub mod store;
 pub mod view;
 
 pub mod action;
+pub mod backend;
 pub mod feel;
 pub mod rhai_engine;
 pub mod function;
@@ -41,7 +42,12 @@ pub use action::{
 pub use feel::{eval_expression, eval_predicate, FeelError};
 pub use function::{evaluate as evaluate_function, input_specs, check_inputs, InputSpec, FunctionError};
 pub use authz::{residual_set, redact_rows};
-pub use funnel::{map_row, MappedObject, SourceMapping, SyncReport, Violation};
+pub use backend::{
+    AggKind, AlgebraCaps, BackendCaps, BackendCtx, BackendKind, ObjectDataBackend, PredicateKind,
+    ProbeReport, TotalMode, PK_BRIDGE_MAX,
+};
+pub use def::DataSourceBinding;
+pub use funnel::{map_row, MappedObject, MappingMode, SourceMapping, SyncReport, Violation};
 pub use import::{map_doc, map_dct, DocImport, DctImport};
 pub use osdk::generate_typescript;
 
@@ -206,7 +212,7 @@ mod tests {
 
     #[test]
     fn backing_fk_side_derived_from_cardinality() {
-        // side 缺省 → 按 cardinality 推导（oneToMany→B / manyToOne→A；推导只在解析层做一次）。
+        // side 缺省 → 按 cardinality 推导（oneToMany→B / oneToOne→A；推导只在解析层做一次）。
         let one_to_many: LinkTypeDef = serde_json::from_value(json!({
             "apiName": "l", "objectTypeA": "A", "objectTypeB": "B",
             "backing": { "fk": { "sourceProperty": "ref" } }
@@ -219,15 +225,21 @@ mod tests {
         );
         assert!(one_to_many.validate().is_ok());
 
-        let many_to_one: LinkTypeDef = serde_json::from_value(json!({
-            "apiName": "l", "objectTypeA": "A", "objectTypeB": "B", "cardinality": "manyToOne",
+        let one_to_one: LinkTypeDef = serde_json::from_value(json!({
+            "apiName": "l", "objectTypeA": "A", "objectTypeB": "B", "cardinality": "oneToOne",
             "backing": { "fk": { "sourceProperty": "ref" } }
         }))
         .unwrap();
         assert_eq!(
-            many_to_one.backing_parsed(),
+            one_to_one.backing_parsed(),
             LinkBacking::ForeignKey { property: "ref".into(), side: LinkEnd::A, target_property: None }
         );
+
+        // manyToOne 已废除：反序列化直接拒绝（与 oneToMany 调换两端同义，勿再建模）。
+        let rejected = serde_json::from_value::<LinkTypeDef>(json!({
+            "apiName": "l", "objectTypeA": "A", "objectTypeB": "B", "cardinality": "manyToOne"
+        }));
+        assert!(rejected.is_err(), "manyToOne 应被反序列化拒绝");
     }
 
     #[test]
@@ -522,11 +534,7 @@ mod tests {
     fn enum_serializes_camel_case() {
         assert_eq!(serde_json::to_value(TypeStatus::Experimental).unwrap(), json!("experimental"));
         assert_eq!(serde_json::to_value(LinkCardinality::OneToMany).unwrap(), json!("oneToMany"));
-        assert_eq!(serde_json::to_value(LinkCardinality::ManyToOne).unwrap(), json!("manyToOne"));
-        assert_eq!(
-            serde_json::from_value::<LinkCardinality>(json!("manyToOne")).unwrap(),
-            LinkCardinality::ManyToOne
-        );
+        assert!(serde_json::from_value::<LinkCardinality>(json!("manyToOne")).is_err());
         assert_eq!(serde_json::to_value(PropertyBaseType::MediaReference).unwrap(), json!("mediaReference"));
         assert_eq!(serde_json::to_value(FunctionRuntime::Feel).unwrap(), json!("feel"));
         assert_eq!(serde_json::to_value(FunctionKind::DerivedProperty).unwrap(), json!("derivedProperty"));

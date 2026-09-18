@@ -835,6 +835,7 @@ dependencies = [
  "cmx-onto-model",
  "serde",
  "serde_json",
+ "sqlparser",
  "thiserror 2.0.20",
  "tokio",
  "tracing",

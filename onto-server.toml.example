@@ -19,3 +19,11 @@ default = true
 [auth]
 mode = "off"
 tenancy = "single"
+
+# —— 方案 20260918：虚拟直查业务源示例（按需启用）——
+# [[databases]]
+# db_id = "fico-db"
+# db_name = "FICO 业务源"
+# db_type = "postgres"
+# db_url = "postgres://user:pass@biz-host:5432/bizdb"
+# source_type = "biz"

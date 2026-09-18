@@ -6,7 +6,7 @@
 //!
 //! 输入为**归一化 JSON**（调用方从 cmx-model DocMetaView/DctQuery 适配而来），保持 onto 与 cmx-model 解耦。
 
-use crate::def::{DamRef, DocTypeRef, LinkCardinality, LinkTypeDef, ObjectTypeDef, PropertyBaseType, PropertyTypeDef};
+use crate::def::{DamRef, DocTypeRef, LinkTypeDef, ObjectTypeDef, PropertyBaseType, PropertyTypeDef};
 use crate::objectset::ObjectRecord;
 use serde_json::{json, Map, Value};
 
@@ -71,7 +71,7 @@ fn entity_scalar_props(e: &Value) -> Vec<PropertyTypeDef> {
 /// role = 该层在父上的属性名（如 lines）。
 fn entity_to_level_prop(
     role: &str,
-    card: LinkCardinality,
+    single: bool,
     child: &Value,
     entities: &std::collections::HashMap<String, Value>,
     rels: &[Value],
@@ -82,16 +82,13 @@ fn entity_to_level_prop(
     for p in entity_scalar_props(child) {
         children.push(prop_to_json(&p));
     }
-    for (crole, ccard, cto) in child_relations(&child_api, rels) {
+    for (crole, csingle, cto) in child_relations(&child_api, rels) {
         if let Some(grand) = entities.get(&cto) {
-            let deep = entity_to_level_prop(&crole, ccard, grand, entities, rels);
+            let deep = entity_to_level_prop(&crole, csingle, grand, entities, rels);
             children.push(prop_to_json(&deep));
         }
     }
-    let base_type = match card {
-        LinkCardinality::OneToMany | LinkCardinality::ManyToMany => PropertyBaseType::Array,
-        LinkCardinality::OneToOne | LinkCardinality::ManyToOne => PropertyBaseType::Struct,
-    };
+    let base_type = if single { PropertyBaseType::Struct } else { PropertyBaseType::Array };
     let api = if role.is_empty() { child_api.clone() } else { role.to_string() };
     PropertyTypeDef {
         api_name: api,
@@ -120,8 +117,10 @@ fn prop_to_json(p: &PropertyTypeDef) -> Value {
     o
 }
 
-/// 找某实体的直接子层：relations 中 from==parent 的 (role, cardinality, to)。
-fn child_relations(parent: &str, rels: &[Value]) -> Vec<(String, LinkCardinality, String)> {
+/// 找某实体的直接子层：relations 中 from==parent 的 (role, single, to)。
+/// single=true → 单值层块 struct（1:1，兼容旧 DAM 的 N:1 输入——manyToOne 与 oneToOne 在
+/// 折叠路径产物同为单值块）；false → array 层块（1:N / N:M）。基数枚举不进本层。
+fn child_relations(parent: &str, rels: &[Value]) -> Vec<(String, bool, String)> {
     let mut out = Vec::new();
     for r in rels {
         if s(r, "from") != parent {
@@ -131,14 +130,9 @@ fn child_relations(parent: &str, rels: &[Value]) -> Vec<(String, LinkCardinality
         if to.is_empty() {
             continue;
         }
-        let card = match s(r, "cardinality").as_str() {
-            "oneToOne" => LinkCardinality::OneToOne,
-            "manyToOne" => LinkCardinality::ManyToOne,
-            "manyToMany" => LinkCardinality::ManyToMany,
-            _ => LinkCardinality::OneToMany,
-        };
+        let single = matches!(s(r, "cardinality").as_str(), "oneToOne" | "manyToOne");
         let role = { let ro = s(r, "role"); if ro.is_empty() { to.clone() } else { ro } };
-        out.push((role, card, to));
+        out.push((role, single, to));
     }
     out
 }
@@ -190,9 +184,9 @@ pub fn map_doc(doc: &Value) -> Result<DocImport, String> {
     for root in roots {
         let api_name = s(root, "apiName");
         let mut props = entity_scalar_props(root);
-        for (role, card, to) in child_relations(&api_name, &rels) {
+        for (role, single, to) in child_relations(&api_name, &rels) {
             if let Some(child) = entities.get(&to) {
-                props.push(entity_to_level_prop(&role, card, child, &entities, &rels));
+                props.push(entity_to_level_prop(&role, single, child, &entities, &rels));
             }
         }
         let primary_key = {

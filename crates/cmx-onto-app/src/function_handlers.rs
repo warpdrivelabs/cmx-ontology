@@ -69,6 +69,8 @@ pub async fn evaluate_fn(
             .aggregation
             .clone()
             .ok_or_else(|| OntoError::business_error("聚合函数须提供 aggregation".to_string()))?;
+        // E3 内部读路径守卫：virtual 类型一律 4xx（防静默空集假结果）。
+        crate::backend_dispatcher::ensure_set_internal_loadable(&tenant, &set).await?;
         let out = object_store()
             .aggregate(&tenant, &set, &agg, &link_resolver())
             .await
@@ -100,6 +102,8 @@ pub async fn evaluate_fn(
                 object_type: object_type.to_string(),
                 primary_keys: vec![pk.clone()],
             };
+            // E3：virtual 类型内部装载拒绝（单对象同样静默空集）。
+            crate::backend_dispatcher::ensure_set_internal_loadable(&tenant, &set).await?;
             let page = object_store()
                 .load(&tenant, &set, &Page { limit: 1, offset: 0 }, &link_resolver())
                 .await
@@ -118,11 +122,27 @@ pub async fn evaluate_fn(
         for (name, raw_set) in m {
             let set: ObjectSet = serde_json::from_value(raw_set.clone())
                 .map_err(|e| OntoError::business_error(format!("objectSet 输入「{name}」非法：{e}")))?;
-            let page = object_store()
-                .load(&tenant, &set, &Page { limit: 10000, offset: 0 }, &link_resolver())
-                .await
-                .map_err(|e| OntoError::internal_error(format!("加载 objectSet 输入失败: {e}")))?;
-            let rows: Vec<Value> = page.rows.into_iter().map(|r| r.properties).collect();
+            // E3：virtual 类型内部装载拒绝。
+            crate::backend_dispatcher::ensure_set_internal_loadable(&tenant, &set).await?;
+            // B-P1-9 截断 bug 修复：store 层 clamp(1,1000) 会把 limit=10000 静默截到 1000——
+            // 改为分页循环拉取（上限 10000 或取尽即止），注入行数不再悄悄丢 90%。
+            let os = object_store();
+            let lr = link_resolver();
+            let mut rows: Vec<Value> = Vec::new();
+            let (mut offset, page_size) = (0u32, 1000u32);
+            loop {
+                let page = os
+                    .load(&tenant, &set, &Page { limit: page_size, offset }, &lr)
+                    .await
+                    .map_err(|e| OntoError::internal_error(format!("加载 objectSet 输入失败: {e}")))?;
+                let got = page.rows.len();
+                rows.extend(page.rows.into_iter().map(|r| r.properties));
+                let exhausted = got < page_size as usize || !page.has_more;
+                if exhausted || rows.len() >= 10000 {
+                    break;
+                }
+                offset += page_size;
+            }
             ctx.insert(name.clone(), Value::Array(rows));
         }
     }

@@ -93,7 +93,7 @@ impl PgOntologyStore {
                         crate::store::json_arr_pub(&def.implements),
                         DataValue::Json(serde_json::to_string(&def.dam).unwrap_or_else(|_| "{}".to_string())),
                         DataValue::Json(serde_json::to_string(&def.doc_type).unwrap_or_else(|_| "{}".to_string())),
-                        crate::store::opt_json_pub(&def.datasource),
+                        crate::store::opt_json_pub(&cmx_onto_model::datasource_to_json(&def.datasource)),
                         crate::store::opt_json_pub(&def.cmx_origin),
                         DataValue::DateTime(now),
                     ],
@@ -126,7 +126,7 @@ impl PgOntologyStore {
                     crate::store::json_arr_pub(&def.implements),
                     DataValue::Json(serde_json::to_string(&def.dam).unwrap_or_else(|_| "{}".to_string())),
                     DataValue::Json(serde_json::to_string(&def.doc_type).unwrap_or_else(|_| "{}".to_string())),
-                    crate::store::opt_json_pub(&def.datasource),
+                    crate::store::opt_json_pub(&cmx_onto_model::datasource_to_json(&def.datasource)),
                     crate::store::opt_json_pub(&def.cmx_origin),
                     DataValue::DateTime(now),
                     DataValue::Int(def.version as i64),
@@ -464,7 +464,7 @@ impl PgOntologyStore {
     /// 解析，须与保存路径 payload 同形状；view 剥离 layout）。
     async fn current_def_json(&self, kind: &str, api_name: &str) -> StoreResult<Option<Value>> {
         use cmx_onto_model::OntologyStore;
-        let mut v: Value = match kind {
+        let v: Value = match kind {
             "object" => serde_json::to_value(self.get_object_type("", api_name).await.ok().flatten()),
             "link" => serde_json::to_value(self.get_link_type("", api_name).await.ok().flatten()),
             "interface" => serde_json::to_value(self.get_interface("", api_name).await.ok().flatten()),
